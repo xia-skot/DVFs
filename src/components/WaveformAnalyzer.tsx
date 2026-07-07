@@ -72,9 +72,9 @@ interface WavePoint {
   };
   calibration?: { 
     wave_teo?: Float32Array; 
-    heads: { index: number; value: number; amplitude?: number; startIdx?: number; endIdx?: number; isManual?: boolean; labelPosition?: 'top-right' | 'top-left' | 'bottom-left' | 'bottom-right' }[]; 
-    initialHeads?: { index: number; value: number; amplitude?: number; startIdx?: number; endIdx?: number; isManual?: boolean; labelPosition?: 'top-right' | 'top-left' | 'bottom-left' | 'bottom-right' }[];
-    sequenceHeads?: { index: number; value: number; amplitude?: number; startIdx?: number; endIdx?: number; isManual?: boolean; labelPosition?: 'top-right' | 'top-left' | 'bottom-left' | 'bottom-right' }[];
+    heads: { index: number; value: number; peakIdx?: number; triggerIdx?: number; amplitude?: number; startIdx?: number; endIdx?: number; isManual?: boolean; labelPosition?: 'top-right' | 'top-left' | 'bottom-left' | 'bottom-right' }[]; 
+    initialHeads?: { index: number; value: number; peakIdx?: number; triggerIdx?: number; amplitude?: number; startIdx?: number; endIdx?: number; isManual?: boolean; labelPosition?: 'top-right' | 'top-left' | 'bottom-left' | 'bottom-right' }[];
+    sequenceHeads?: { index: number; value: number; peakIdx?: number; triggerIdx?: number; amplitude?: number; startIdx?: number; endIdx?: number; isManual?: boolean; labelPosition?: 'top-right' | 'top-left' | 'bottom-left' | 'bottom-right' }[];
     isManual?: boolean;
     debugInfo?: any;
     debugWaves?: {
@@ -227,8 +227,8 @@ export function getWindowOptions(detType: string): { label: string, value: Windo
     { label: '原始波形', value: 'original' },
     { label: '相模变换', value: 'karenbauer' },
   ];
-  if (detType === 'sequence-user-upload') {
-    base.push({ label: '滤除工频', value: 'denoise' });
+  if (detType === 'sequence-user-upload' || detType === 'sequence') {
+    base.push({ label: '工频滤波信号', value: 'denoise' });
     base.push({ label: '工频重构对比', value: 'pso-compare' });
   }
   base.push({ label: '差分信号', value: 'differential' });
@@ -787,12 +787,26 @@ export function WaveformAnalyzer({ pointsCountFromTopology = 4, machineListFromT
         if (curveKey === 'original') return dw.original[roundedIndex] ?? 0;
         if (curveKey === 'diff1') return dw.diff1[roundedIndex] ?? 0;
         if (curveKey === 'diff2') return dw.diff2[roundedIndex] ?? 0;
-        if (curveKey === 'diff3') return dw.diff3[roundedIndex] ?? 0;
       }
 
       const baseWave = selectedModulus === 'beta' ? resBeta : selectedModulus === 'zero' ? resZero : resAlpha;
       if (curveKey === 'value') return baseWave[roundedIndex] ?? 0;
       
+      if (curveKey === 'diffSignal') {
+        if (point.calibration?.wave_teo) {
+          return point.calibration.wave_teo[roundedIndex] ?? 0;
+        }
+        if (processingMethod === 'wavelet') {
+          return discreteWaveletTransform(baseWave, waveletType)[roundedIndex] ?? 0;
+        }
+        if (processingMethod === 'teo') {
+          return teagerEnergyOperator(baseWave)[roundedIndex] ?? 0;
+        }
+        if (processingMethod === 'wave') {
+          return baseWave[roundedIndex] ?? 0;
+        }
+        return doubleDifference(baseWave)[roundedIndex] ?? 0;
+      }
       const diffs = multiDifference(baseWave);
       if (curveKey === 'diff1') return diffs.diff1[roundedIndex] ?? 0;
       if (curveKey === 'diff2') return diffs.diff2[roundedIndex] ?? 0;
@@ -842,8 +856,16 @@ export function WaveformAnalyzer({ pointsCountFromTopology = 4, machineListFromT
       const transformFn = transformType === 'karenbauer' ? karenbauerTransform : clarkeTransform;
       const res = transformFn(point.phaseA, point.phaseB, point.phaseC);
       const baseWave = selectedModulus === 'beta' ? res.wave_beta : selectedModulus === 'zero' ? res.wave_0 : res.wave_alpha;
-      const pWave = doubleDifference(baseWave);
-      return pWave[roundedIndex] ?? 0;
+      if (detectionType === 'initial') {
+        if (point.calibration?.wave_teo) {
+          return point.calibration.wave_teo[roundedIndex] ?? 0;
+        }
+        if (processingMethod === 'teo') return teagerEnergyOperator(baseWave)[roundedIndex] ?? 0;
+        if (processingMethod === 'wavelet') return discreteWaveletTransform(baseWave, waveletType)[roundedIndex] ?? 0;
+        return doubleDifference(baseWave)[roundedIndex] ?? 0;
+      } else {
+        return baseWave[roundedIndex] ?? 0;
+      }
     } else {
       const transformFn = transformType === 'karenbauer' ? karenbauerTransform : clarkeTransform;
       const res = transformFn(point.phaseA, point.phaseB, point.phaseC);
@@ -1472,57 +1494,78 @@ export function WaveformAnalyzer({ pointsCountFromTopology = 4, machineListFromT
             lastUpdateTime = performance.now();
           }
           
-          const cond = conditions[cIdx];
+        const cond = conditions[cIdx];
           const newPoints = cond.points.map((point) => {
-        // 1. Transform
-        let baseWave: Float32Array | number[];
-        if (transformType === 'karenbauer') {
-          const kb = point.karenbauer || karenbauerTransform(point.phaseA, point.phaseB, point.phaseC);
-          if (selectedModulus === 'beta') baseWave = kb.wave_beta;
-          else if (selectedModulus === 'zero') baseWave = kb.wave_0;
-          else baseWave = kb.wave_alpha;
-        } else {
-          const cl = clarkeTransform(point.phaseA, point.phaseB, point.phaseC);
-          if (selectedModulus === 'beta') baseWave = cl.wave_beta;
-          else if (selectedModulus === 'zero') baseWave = cl.wave_0;
-          else baseWave = cl.wave_alpha;
-        }
+            // PERFORMANCE OPTIMIZATION: Cache calibration results
+            const currentPsoKey = `${samplingFreq}-${fittingWindowLen}-${psoPopulation}-${psoIterations}`;
+            const caliKey = `${point.id}-${detectionType}-${processingMethod}-${JSON.stringify(settings.faultDetection)}-${selectedModulus}-${currentPsoKey}`;
+            
+            if ((point as any).lastCaliKey === caliKey && point.calibration?.heads) {
+              return point;
+            }
 
-        // 2. Pre-processing
-        let processedWave: Float32Array | number[];
-        let newDenoised = point.denoised;
-        let newPsoErrors = point.psoErrors;
-        let newPsoParams = point.psoParams;
+            // 1. Transform
+            let baseWave: Float32Array | number[];
+            if (transformType === 'karenbauer') {
+              const kb = point.karenbauer || karenbauerTransform(point.phaseA, point.phaseB, point.phaseC);
+              if (selectedModulus === 'beta') baseWave = kb.wave_beta;
+              else if (selectedModulus === 'zero') baseWave = kb.wave_0;
+              else baseWave = kb.wave_alpha;
+            } else {
+              const cl = clarkeTransform(point.phaseA, point.phaseB, point.phaseC);
+              if (selectedModulus === 'beta') baseWave = cl.wave_beta;
+              else if (selectedModulus === 'zero') baseWave = cl.wave_0;
+              else baseWave = cl.wave_alpha;
+            }
 
-        if (detectionType === 'sequence-user-upload') {
-          // For sequence mode (user upload), update denoised data for all moduli using current PSO settings
-          const kb = point.karenbauer || karenbauerTransform(point.phaseA, point.phaseB, point.phaseC);
-          
-          const res0 = removePowerFrequency(kb.wave_0, samplingFreq, fittingWindowLen, psoPopulation, psoIterations);
-          const resa = removePowerFrequency(kb.wave_alpha, samplingFreq, fittingWindowLen, psoPopulation, psoIterations);
-          const resb = removePowerFrequency(kb.wave_beta, samplingFreq, fittingWindowLen, psoPopulation, psoIterations);
-          
-          newDenoised = {
-            wave_0: res0.data,
-            wave_alpha: resa.data,
-            wave_beta: resb.data
-          };
-          newPsoErrors = {
-            wave_0: res0.error,
-            wave_alpha: resa.error,
-            wave_beta: resb.error
-          };
-          newPsoParams = {
-            wave_0: { A: res0.A, f: res0.f, theta: res0.theta, error: res0.error },
-            wave_alpha: { A: resa.A, f: resa.f, theta: resa.theta, error: resa.error },
-            wave_beta: { A: resb.A, f: resb.f, theta: resb.theta, error: resb.error }
-          };
+            // 2. Pre-processing
+            let processedWave: Float32Array | number[];
+            let newDenoised = point.denoised;
+            let newPsoErrors = point.psoErrors;
+            let newPsoParams = point.psoParams;
 
-          if (selectedModulus === 'beta') processedWave = resb.data;
-          else if (selectedModulus === 'zero') processedWave = res0.data;
-          else processedWave = resa.data;
+            if (detectionType === 'sequence-user-upload') { // ONLY do PSO for user-upload
+              // For sequence mode, update denoised data for all moduli using current PSO settings
+              // PERFORMANCE OPTIMIZATION: Only re-denoise if parameters changed or data missing
+              const isStale = !point.denoised || (point as any).psoParamsKey !== currentPsoKey;
+
+          if (!isStale && point.denoised) {
+             newDenoised = point.denoised;
+             newPsoErrors = point.psoErrors;
+             newPsoParams = point.psoParams;
+             if (selectedModulus === 'beta') processedWave = point.denoised.wave_beta;
+             else if (selectedModulus === 'zero') processedWave = point.denoised.wave_0;
+             else processedWave = point.denoised.wave_alpha;
+          } else {
+             const kb = point.karenbauer || karenbauerTransform(point.phaseA, point.phaseB, point.phaseC);
+             
+             const res0 = removePowerFrequency(kb.wave_0, samplingFreq, fittingWindowLen, psoPopulation, psoIterations);
+             const resa = removePowerFrequency(kb.wave_alpha, samplingFreq, fittingWindowLen, psoPopulation, psoIterations);
+             const resb = removePowerFrequency(kb.wave_beta, samplingFreq, fittingWindowLen, psoPopulation, psoIterations);
+             
+             newDenoised = {
+               wave_0: res0.data,
+               wave_alpha: resa.data,
+               wave_beta: resb.data
+             };
+             newPsoErrors = {
+               wave_0: res0.error,
+               wave_alpha: resa.error,
+               wave_beta: resb.error
+             };
+             newPsoParams = {
+               wave_0: { A: res0.A, f: res0.f, theta: res0.theta, error: res0.error },
+               wave_alpha: { A: resa.A, f: resa.f, theta: resa.theta, error: resa.error },
+               wave_beta: { A: resb.A, f: resb.f, theta: resb.theta, error: resb.error }
+             };
+             (point as any).psoParamsKey = currentPsoKey;
+
+             if (selectedModulus === 'beta') processedWave = resb.data;
+             else if (selectedModulus === 'zero') processedWave = res0.data;
+             else processedWave = resa.data;
+          }
         } else if (detectionType === 'sequence') {
-          // Classic sequence mode: NO PSO, no denoised values, processedWave is just the raw baseWave
+          // Standard sequence: No PSO
           newDenoised = undefined;
           newPsoErrors = undefined;
           newPsoParams = undefined;
@@ -1538,7 +1581,7 @@ export function WaveformAnalyzer({ pointsCountFromTopology = 4, machineListFromT
         }
 
         // 3. Calibration
-        let heads: { index: number, value: number, amplitude?: number, startIdx?: number, endIdx?: number, startVal?: number, isManual?: boolean }[] = [];
+        let heads: { index: number, peakIdx?: number, triggerIdx?: number, value: number, amplitude?: number, startIdx?: number, endIdx?: number, startVal?: number, isManual?: boolean }[] = [];
         let debugInfo: any = null;
         let debugWaves: any = null;
         
@@ -1557,7 +1600,9 @@ export function WaveformAnalyzer({ pointsCountFromTopology = 4, machineListFromT
           debugInfo = result.debugInfo;
           if (result.detected) {
             heads = [{ 
-              index: result.t_arrive, 
+              index: result.peakIdx, 
+              peakIdx: result.peakIdx,
+              triggerIdx: result.t_arrive,
               value: result.max_val,
               isManual: false,
               startIdx: Math.max(0, result.t_arrive - 10),
@@ -1570,12 +1615,12 @@ export function WaveformAnalyzer({ pointsCountFromTopology = 4, machineListFromT
             thresholdFactor,
             preFaultWindowRatio: preFaultRatio,
             para_cali_windows_length: settings.faultDetection.para_cali_windows_length ?? 1000,
-            para_cali_start_doorsill: settings.faultDetection.para_cali_start_doorsill ?? 0.1,
+            para_cali_start_doorsill: settings.faultDetection.para_cali_start_doorsill ?? 0.01,
             para_cali_hist: settings.faultDetection.para_cali_hist ?? 200,
             para_cali_hist_sift: settings.faultDetection.para_cali_hist_sift ?? 30,
-            user_diff2_time: settings.faultDetection.user_diff2_time ?? 7,
+            user_diff2_time: settings.faultDetection.user_diff2_time ?? 10,
             user_diff2_time_end: settings.faultDetection.user_diff2_time_end ?? 50,
-            para_cali_head_count: settings.faultDetection.para_cali_head_count ?? 8
+            para_cali_head_count: settings.faultDetection.para_cali_head_count ?? 15
           });
           heads = results.heads.map(r => ({ 
             index: r.index, 
@@ -1595,11 +1640,11 @@ export function WaveformAnalyzer({ pointsCountFromTopology = 4, machineListFromT
             thresholdFactor,
             preFaultWindowRatio: preFaultRatio,
             para_cali_windows_length: settings.faultDetection.para_cali_windows_length ?? 3000,
-            para_cali_start_doorsill: settings.faultDetection.para_cali_start_doorsill ?? 0.1,
+            para_cali_start_doorsill: settings.faultDetection.para_cali_start_doorsill ?? 0.01,
             para_cali_hist_sift: settings.faultDetection.para_cali_hist_sift ?? 30,
-            user_diff2_time: settings.faultDetection.user_diff2_time ?? 7,
+            user_diff2_time: settings.faultDetection.user_diff2_time ?? 10,
             user_diff2_time_end: settings.faultDetection.user_diff2_time_end ?? 50,
-            para_cali_head_count: settings.faultDetection.para_cali_head_count ?? 8
+            para_cali_head_count: settings.faultDetection.para_cali_head_count ?? 15
           });
           heads = results.map(r => ({ 
             index: r.index, 
@@ -1656,6 +1701,8 @@ export function WaveformAnalyzer({ pointsCountFromTopology = 4, machineListFromT
             wave_teo: processedWave,
             heads: finalHeads.map(h => ({ 
               index: h.index, 
+              peakIdx: h.peakIdx,
+              triggerIdx: h.triggerIdx,
               value: h.value, 
               amplitude: h.amplitude,
               startIdx: h.startIdx,
@@ -1665,6 +1712,8 @@ export function WaveformAnalyzer({ pointsCountFromTopology = 4, machineListFromT
             })),
             initialHeads: initialHeads.map((h: any) => ({
               index: h.index,
+              peakIdx: h.peakIdx,
+              triggerIdx: h.triggerIdx,
               value: h.value,
               amplitude: h.amplitude,
               startIdx: h.startIdx,
@@ -1674,6 +1723,8 @@ export function WaveformAnalyzer({ pointsCountFromTopology = 4, machineListFromT
             })),
             sequenceHeads: sequenceHeads.map((h: any) => ({
               index: h.index,
+              peakIdx: h.peakIdx,
+              triggerIdx: h.triggerIdx,
               value: h.value,
               amplitude: h.amplitude,
               startIdx: h.startIdx,
@@ -1923,109 +1974,88 @@ export function WaveformAnalyzer({ pointsCountFromTopology = 4, machineListFromT
       const isCalculated = !!(point.calibration?.wave_teo || point.denoised || point.calibration?.debugWaves);
       let rawData: any[] = [];
       
-      if (category === 'original') {
-        rawData = Array.from(point.phaseA).map((val, idx) => ({ 
-          time: idx / samplingFreq, 
-          A: val, 
-          B: point.phaseB[idx], 
-          C: point.phaseC[idx] 
-        }));
-      } else if (!isCalculated) {
-        // If not calculated, non-original windows should be empty as per user request
+      if (category !== 'original' && !isCalculated) {
         rawData = [];
-      } else if (category === 'karenbauer') {
-        // Show current transformation result
-        const transformFn = transformType === 'karenbauer' ? karenbauerTransform : clarkeTransform;
-        const res = transformFn(point.phaseA, point.phaseB, point.phaseC);
-        rawData = Array.from(res.wave_alpha).map((val, idx) => ({ 
-          time: idx / samplingFreq, 
-          alpha: val, 
-          beta: res.wave_beta[idx], 
-          zero: res.wave_0[idx] 
-        }));
-      } else if (category === 'differential') {
-        // Show line mode wave, 1st diff, 2nd diff (on denoised signal, i.e. 滤除工频后的信号)
-        const denoised = point.denoised;
-        if (!denoised) {
-          rawData = [];
-        } else {
-          const baseWave = selectedModulus === 'beta' ? denoised.wave_beta : selectedModulus === 'zero' ? denoised.wave_0 : denoised.wave_alpha;
-          const diffs = multiDifference(baseWave);
-          rawData = Array.from(baseWave).map((val, idx) => ({ 
-            time: idx / samplingFreq, 
-            value: val, 
-            diff1: diffs.diff1[idx], 
-            diff2: diffs.diff2[idx] 
-          }));
-        }
-      } else if (category === 'teo') {
-        // Use stored teo only
-        const pWave = point.calibration?.wave_teo;
-        if (pWave) {
-          rawData = Array.from(pWave).map((val, idx) => ({ time: idx / samplingFreq, teo: val }));
-        }
-      } else if (category === 'calibration') {
-        // Show original waveform but aware of markers
-        rawData = Array.from(point.phaseA).map((val, idx) => ({ time: idx / samplingFreq, A: val }));
-      } else if (category === 'noise' || category === 'denoise') {
-        if (category === 'denoise' && !point.denoised) {
-          rawData = [];
-        } else {
-          const transformFn = transformType === 'karenbauer' ? karenbauerTransform : clarkeTransform;
-          const res = transformFn(point.phaseA, point.phaseB, point.phaseC);
-          const base = selectedModulus === 'beta' ? res.wave_beta : selectedModulus === 'zero' ? res.wave_0 : res.wave_alpha;
-          if (category === 'noise') {
-            const noisy = addNoise(base, 20);
-            rawData = Array.from(noisy).map((val, idx) => ({ time: idx / samplingFreq, value: val }));
-          } else {
-             const pWave = selectedModulus === 'beta' ? point.denoised?.wave_beta : selectedModulus === 'zero' ? point.denoised?.wave_0 : point.denoised?.wave_alpha;
-             if (!pWave) rawData = [];
-             else rawData = Array.from(pWave).map((val, idx) => ({ time: idx / samplingFreq, value: val }));
-          }
-        }
-      } else if (category === 'pso-compare') {
-        if (!point.denoised) {
-          rawData = [];
-        } else {
-          const transformFn = transformType === 'karenbauer' ? karenbauerTransform : clarkeTransform;
-          const res = transformFn(point.phaseA, point.phaseB, point.phaseC);
-          const modal = selectedModulus === 'beta' ? res.wave_beta : selectedModulus === 'zero' ? res.wave_0 : res.wave_alpha;
-          const filtered = selectedModulus === 'beta' ? point.denoised.wave_beta : selectedModulus === 'zero' ? point.denoised.wave_0 : point.denoised.wave_alpha;
-          
-          rawData = Array.from(modal).map((val, idx) => {
-            const filtVal = filtered[idx] ?? val;
-            return {
-              time: idx / samplingFreq,
-              modal: val,
-              filtered: filtVal,
-              reconstructed: val - filtVal
-            };
-          });
-        }
-      } else if (category === 'user-debug') {
-        const dw = point.calibration?.debugWaves;
-        if (!dw) {
-          rawData = [];
-        } else {
-          rawData = Array.from(dw.original).map((val, idx) => ({
-            time: idx / samplingFreq,
-            original: val,
-            diff1: dw.diff1[idx],
-            diff2: dw.diff2[idx],
-            diff3: dw.diff3[idx]
-          }));
-        }
       } else {
-        rawData = [];
+        const startIdx = (listXDomain[0] !== 'dataMin') ? Math.max(0, Math.floor((listXDomain[0] as number) * samplingFreq)) : 0;
+        const endIdx = (listXDomain[1] !== 'dataMax') ? Math.min(point.phaseA.length - 1, Math.ceil((listXDomain[1] as number) * samplingFreq)) : point.phaseA.length - 1;
+        
+        // Base array for downsampling
+        let baseForDownsample = point.phaseA;
+        if (category === 'differential' && point.denoised) {
+          baseForDownsample = selectedModulus === 'beta' ? point.denoised.wave_beta : selectedModulus === 'zero' ? point.denoised.wave_0 : point.denoised.wave_alpha;
+        } else if (category === 'teo' && point.calibration?.wave_teo) {
+          baseForDownsample = point.calibration.wave_teo;
+        } else if (category === 'noise' || category === 'denoise') {
+           const transformFn = transformType === 'karenbauer' ? karenbauerTransform : clarkeTransform;
+           const res = transformFn(point.phaseA, point.phaseB, point.phaseC);
+           baseForDownsample = selectedModulus === 'beta' ? res.wave_beta : selectedModulus === 'zero' ? res.wave_0 : res.wave_alpha;
+        }
+        
+        const subArray = baseForDownsample.slice(startIdx, endIdx + 1);
+        const indices = downsampleNumericArray(subArray, 400).map(s => s.index + startIdx);
+        
+        rawData = indices.map(idx => {
+          const pt: any = { time: idx / samplingFreq };
+          if (category === 'original') {
+            pt.A = point.phaseA[idx];
+            pt.B = point.phaseB[idx];
+            pt.C = point.phaseC[idx];
+          } else if (category === 'karenbauer') {
+            const transformFn = transformType === 'karenbauer' ? karenbauerTransform : clarkeTransform;
+            const res = transformFn(point.phaseA, point.phaseB, point.phaseC);
+            pt.alpha = res.wave_alpha[idx];
+            pt.beta = res.wave_beta[idx];
+            pt.zero = res.wave_0[idx];
+          } else if (category === 'differential') {
+            const denoised = point.denoised;
+            if (denoised) {
+              const baseWave = selectedModulus === 'beta' ? denoised.wave_beta : selectedModulus === 'zero' ? denoised.wave_0 : denoised.wave_alpha;
+              const diffs = multiDifference(baseWave);
+              pt.value = baseWave[idx];
+              pt.diff1 = diffs.diff1[idx];
+              pt.diff2 = diffs.diff2[idx];
+            }
+          } else if (category === 'teo') {
+            if (point.calibration?.wave_teo) pt.teo = point.calibration.wave_teo[idx];
+          } else if (category === 'calibration') {
+            pt.A = point.phaseA[idx];
+          } else if (category === 'noise' || category === 'denoise') {
+             const transformFn = transformType === 'karenbauer' ? karenbauerTransform : clarkeTransform;
+             const res = transformFn(point.phaseA, point.phaseB, point.phaseC);
+             const base = selectedModulus === 'beta' ? res.wave_beta : selectedModulus === 'zero' ? res.wave_0 : res.wave_alpha;
+             if (category === 'noise') {
+               const noisy = addNoise(base, 20);
+               pt.value = noisy[idx];
+             } else {
+               const pWave = selectedModulus === 'beta' ? point.denoised?.wave_beta : selectedModulus === 'zero' ? point.denoised?.wave_0 : point.denoised?.wave_alpha;
+               if (pWave) pt.value = pWave[idx];
+             }
+          } else if (category === 'pso-compare') {
+            if (point.denoised) {
+              const transformFn = transformType === 'karenbauer' ? karenbauerTransform : clarkeTransform;
+              const res = transformFn(point.phaseA, point.phaseB, point.phaseC);
+              const modalVal = selectedModulus === 'beta' ? res.wave_beta[idx] : selectedModulus === 'zero' ? res.wave_0[idx] : res.wave_alpha[idx];
+              const filteredVal = selectedModulus === 'beta' ? point.denoised.wave_beta[idx] : selectedModulus === 'zero' ? point.denoised.wave_0[idx] : point.denoised.wave_alpha[idx];
+              pt.modal = modalVal;
+              pt.filtered = filteredVal;
+              pt.reconstructed = modalVal - filteredVal;
+            }
+          } else if (category === 'user-debug') {
+            const dw = point.calibration?.debugWaves;
+            if (dw) {
+              pt.original = dw.original[idx];
+              pt.diff1 = dw.diff1[idx];
+              pt.diff2 = dw.diff2[idx];
+              pt.diff3 = dw.diff3[idx];
+            }
+          }
+          return pt;
+        });
       }
 
-      if (listXDomain[0] !== 'dataMin' && listXDomain[1] !== 'dataMax') {
-        rawData = rawData.filter(d => d.time >= (listXDomain[0] as number) && d.time <= (listXDomain[1] as number));
-      }
-      
-      const res = downsampleData(rawData, 400); // More aggressive downsampling for list view performance
-      cache.set(cacheKey, res);
-      return res;
+      cache.set(cacheKey, rawData);
+      return rawData;
     };
   }, [samplingFreq, listXDomain, dataVersion, transformType, processingMethod, hasProcessed]);
 
@@ -2036,24 +2066,34 @@ export function WaveformAnalyzer({ pointsCountFromTopology = 4, machineListFromT
       const cacheKey = `${point.id}-${processMode}`;
       if (cache.has(cacheKey)) return cache.get(cacheKey);
       
-      let rawData: any[] = [];
+      let baseWave: number[] | Float32Array = [];
       if (processMode === 'karenbauer') {
         const kb = point.karenbauer || karenbauerTransform(point.phaseA, point.phaseB, point.phaseC);
-        rawData = Array.from(kb.wave_alpha).map((val, idx) => ({
-          time: idx / samplingFreq,
-          alpha: val,
-          beta: kb.wave_beta[idx],
-          zero: kb.wave_0[idx]
-        }));
+        baseWave = kb.wave_alpha;
       } else if (processMode === 'denoise') {
         if (!point.denoised) return [];
-        rawData = Array.from(point.denoised.wave_alpha).map((val, idx) => ({ time: idx / samplingFreq, alpha: val }));
+        baseWave = point.denoised.wave_alpha;
       } else { 
         const kb = point.karenbauer || karenbauerTransform(point.phaseA, point.phaseB, point.phaseC);
-        const teo = point.calibration?.wave_teo || teagerEnergyOperator(kb.wave_alpha);
-        rawData = Array.from(teo).map((val, idx) => ({ time: idx / samplingFreq, teo: val }));
+        baseWave = point.calibration?.wave_teo || teagerEnergyOperator(kb.wave_alpha);
       }
-      const res = downsampleData(rawData, 300);
+
+      const indices = downsampleNumericArray(baseWave, 300).map(s => s.index);
+      const res = indices.map(idx => {
+        const pt: any = { time: idx / samplingFreq };
+        if (processMode === 'karenbauer') {
+          const kb = point.karenbauer || karenbauerTransform(point.phaseA, point.phaseB, point.phaseC);
+          pt.alpha = kb.wave_alpha[idx];
+          pt.beta = kb.wave_beta[idx];
+          pt.zero = kb.wave_0[idx];
+        } else if (processMode === 'denoise') {
+          pt.alpha = point.denoised!.wave_alpha[idx];
+        } else {
+          pt.teo = baseWave[idx];
+        }
+        return pt;
+      });
+
       cache.set(cacheKey, res);
       return res;
     };
@@ -2097,45 +2137,40 @@ export function WaveformAnalyzer({ pointsCountFromTopology = 4, machineListFromT
       activePoint.calibration.heads.forEach(h => {
         const roundedIdx = Math.round(h.index);
         preserveIndices.push(roundedIdx);
+        if (h.peakIdx !== undefined) preserveIndices.push(Math.round(h.peakIdx));
         if (h.startIdx !== undefined) preserveIndices.push(Math.round(h.startIdx));
         if (h.endIdx !== undefined) preserveIndices.push(Math.round(h.endIdx));
-        // Preserve surrounding points for peak shape
         for (let i = -5; i <= 5; i++) {
           preserveIndices.push(roundedIdx + i);
         }
       });
     }
 
-    // Also preserve debug extrema points in user-debug mode to ensure exact peak alignment
-    if (activePoint.calibration?.debugInfo?.extrema) {
-      activePoint.calibration.debugInfo.extrema.forEach((ext: any) => {
-        const roundedIdx = Math.round(ext.index);
-        preserveIndices.push(roundedIdx);
-        for (let i = -3; i <= 3; i++) {
-          preserveIndices.push(roundedIdx + i);
-        }
-      });
-    }
-    if (activePoint.calibration?.debugInfo?.T_head) {
-      activePoint.calibration.debugInfo.T_head.forEach((idx: number) => {
-        const roundedIdx = Math.round(idx);
-        preserveIndices.push(roundedIdx);
-        for (let i = -3; i <= 3; i++) {
-          preserveIndices.push(roundedIdx + i);
-        }
-      });
-    }
-
-    const sampled = downsampleNumericArray(baseWave, 2500, preserveIndices);
+    // Performance Optimization: Downsample the focus data for rendering
+    const sampledIndices = downsampleNumericArray(baseWave, 2000, preserveIndices).map(s => s.index);
     
-    const diffs = (singleWaveType === 'differential') ? multiDifference(baseWave) : null;
+    // Pre-calculate expensive transformations if needed outside the map loop
+    const diffResults = (singleWaveType === 'differential') 
+      ? multiDifference(baseWave) 
+      : null;
+    
+    const dDiffWave = (singleWaveType === 'differential' && detectionType === 'initial')
+      ? (activePoint.calibration?.wave_teo || 
+         (processingMethod === 'wavelet' 
+           ? discreteWaveletTransform(baseWave, waveletType) 
+           : processingMethod === 'teo'
+             ? teagerEnergyOperator(baseWave)
+             : processingMethod === 'wave'
+               ? baseWave
+               : doubleDifference(baseWave)))
+      : null;
 
-    const data = sampled.map(s => {
-      const idx = s.index;
+    const data = sampledIndices.map(idx => {
+      const val = baseWave[idx];
       const pt: any = {
         time: idx / samplingFreq,
         originalIndex: idx,
-        value: s.value
+        value: val
       };
 
       if (singleWaveType === 'original') {
@@ -2147,10 +2182,17 @@ export function WaveformAnalyzer({ pointsCountFromTopology = 4, machineListFromT
         pt.beta = res.wave_beta[idx];
         pt.zero = res.wave_0[idx];
       } else if (singleWaveType === 'differential') {
-        pt.diff1 = diffs?.diff1[idx];
-        pt.diff2 = diffs?.diff2[idx];
+        if (detectionType === 'initial') {
+          // Use MATLAB double difference for diffSignal if it's initial mode
+          pt.diffSignal = dDiffWave ? dDiffWave[idx] : (activePoint.calibration?.wave_teo?.[idx] || 0);
+          pt.diff1 = diffResults?.diff1[idx];
+          pt.diff2 = diffResults?.diff2[idx];
+        } else {
+          pt.diff1 = diffResults?.diff1[idx];
+          pt.diff2 = diffResults?.diff2[idx];
+        }
       } else if (singleWaveType === 'pso-compare') {
-        const modalVal = s.value;
+        const modalVal = pt.value;
         let filteredVal = modalVal;
         if (activePoint.denoised) {
           if (selectedModulus === 'beta') filteredVal = activePoint.denoised.wave_beta[idx];
@@ -2166,19 +2208,17 @@ export function WaveformAnalyzer({ pointsCountFromTopology = 4, machineListFromT
           pt.original = dw.original[idx];
           pt.diff1 = dw.diff1[idx];
           pt.diff2 = dw.diff2[idx];
-          pt.diff3 = dw.diff3[idx];
         }
       }
 
       return pt;
     });
 
-    // Add calibrated wave head shading values if in calibration or differential mode
+    // Add calibrated wave head shading
     if (activePoint?.calibration?.heads && (singleWaveType === 'calibration' || singleWaveType === 'differential')) {
       activePoint.calibration.heads.forEach((h: any, hIdx: number) => {
         const sIdx = h.startIdx !== undefined ? h.startIdx : Math.max(0, h.index - 8);
         const eIdx = h.endIdx !== undefined ? h.endIdx : h.index;
-
         data.forEach((pt: any) => {
           const idx = pt.originalIndex;
           if (idx >= sIdx && idx <= eIdx) {
@@ -2189,7 +2229,7 @@ export function WaveformAnalyzer({ pointsCountFromTopology = 4, machineListFromT
     }
 
     return data;
-  }, [activePoint, hasProcessed, singleWaveType, samplingFreq, selectedModulus, transformType, xDomain]);
+  }, [activePoint, hasProcessed, singleWaveType, samplingFreq, selectedModulus, transformType, detectionType, processingMethod, waveletType, xDomain, dataVersion]);
 
   const margins = { top: 45, right: 25, left: 20, bottom: 8 };
 
@@ -2216,9 +2256,13 @@ export function WaveformAnalyzer({ pointsCountFromTopology = 4, machineListFromT
           if (!analysisHiddenLines.includes('beta') && pt.beta !== undefined) { if (pt.beta < min) min = pt.beta; if (pt.beta > max) max = pt.beta; }
           if (!analysisHiddenLines.includes('zero') && pt.zero !== undefined) { if (pt.zero < min) min = pt.zero; if (pt.zero > max) max = pt.zero; }
         } else if (singleWaveType === 'differential') {
-          if (!analysisHiddenLines.includes('value') && pt.value !== undefined) { if (pt.value < min) min = pt.value; if (pt.value > max) max = pt.value; }
-          if (!analysisHiddenLines.includes('diff1') && pt.diff1 !== undefined) { if (pt.diff1 < min) min = pt.diff1; if (pt.diff1 > max) max = pt.diff1; }
-          if (!analysisHiddenLines.includes('diff2') && pt.diff2 !== undefined) { if (pt.diff2 < min) min = pt.diff2; if (pt.diff2 > max) max = pt.diff2; }
+          if (detectionType !== 'initial' && !analysisHiddenLines.includes('value') && pt.value !== undefined) { if (pt.value < min) min = pt.value; if (pt.value > max) max = pt.value; }
+          if (detectionType === 'initial') {
+            if (!analysisHiddenLines.includes('diffSignal') && pt.diffSignal !== undefined) { if (pt.diffSignal < min) min = pt.diffSignal; if (pt.diffSignal > max) max = pt.diffSignal; }
+          } else {
+            if (!analysisHiddenLines.includes('diff1') && pt.diff1 !== undefined) { if (pt.diff1 < min) min = pt.diff1; if (pt.diff1 > max) max = pt.diff1; }
+            if (!analysisHiddenLines.includes('diff2') && pt.diff2 !== undefined) { if (pt.diff2 < min) min = pt.diff2; if (pt.diff2 > max) max = pt.diff2; }
+          }
         } else if (singleWaveType === 'pso-compare') {
           if (!analysisHiddenLines.includes('modal') && pt.modal !== undefined) { if (pt.modal < min) min = pt.modal; if (pt.modal > max) max = pt.modal; }
           if (!analysisHiddenLines.includes('filtered') && pt.filtered !== undefined) { if (pt.filtered < min) min = pt.filtered; if (pt.filtered > max) max = pt.filtered; }
@@ -2242,7 +2286,9 @@ export function WaveformAnalyzer({ pointsCountFromTopology = 4, machineListFromT
       if (key === 'diff1') return 1;
       if (key === 'diff2') return 2;
       if (key === 'diff3') return 3;
-    } else {
+    } else if (singleWaveType === 'differential' && detectionType === 'initial') {
+      return 0; // Only one subplot in initial mode
+    } else if (singleWaveType === 'differential') {
       if (key === 'value') return 0;
       if (key === 'diff2') return 1;
       if (key === 'diff1') return 2;
@@ -2252,8 +2298,9 @@ export function WaveformAnalyzer({ pointsCountFromTopology = 4, machineListFromT
 
   const getSubplotRect = (i: number, divRect: DOMRect) => {
     const isUserDebug = singleWaveType === 'user-debug';
-    const totalSubplots = isUserDebug ? 4 : 3;
-    const topMargin = i === 0 ? 10 : 5;
+    const isInitialDiff = singleWaveType === 'differential' && detectionType === 'initial';
+    const totalSubplots = isUserDebug ? 4 : (isInitialDiff ? 1 : 3);
+    const topMargin = isUserDebug ? 5 : (i === 0 ? 10 : 5);
     const bottomMargin = i === (totalSubplots - 1) ? 20 : 5;
     const leftMargin = 20;
     const rightMargin = 30;
@@ -2291,8 +2338,9 @@ export function WaveformAnalyzer({ pointsCountFromTopology = 4, machineListFromT
     let ptY_px = 0;
     const subplotElements = chartRef.current ? chartRef.current.querySelectorAll('.flex-1.min-h-0.relative') : null;
     const isUserDebug = singleWaveType === 'user-debug';
-    const expectedLen = isUserDebug ? 4 : 3;
-    const isMultiSubplot = (singleWaveType === 'differential' && subplotElements && subplotElements.length === 3) ||
+    const isInitialDiff = singleWaveType === 'differential' && detectionType === 'initial';
+    const expectedLen = isUserDebug ? 4 : (isInitialDiff ? 1 : 3);
+    const isMultiSubplot = (singleWaveType === 'differential' && subplotElements && subplotElements.length === expectedLen) ||
                            (isUserDebug && subplotElements && subplotElements.length === 4);
     
     if (isMultiSubplot && subplotElements) {
@@ -2383,9 +2431,18 @@ export function WaveformAnalyzer({ pointsCountFromTopology = 4, machineListFromT
       if (!analysisHiddenLines.includes('beta')) curves.push({ key: 'beta', color: '#a855f7' });
       if (!analysisHiddenLines.includes('zero')) curves.push({ key: 'zero', color: '#94a3b8' });
     } else if (singleWaveType === 'differential') {
-      if (!analysisHiddenLines.includes('value')) curves.push({ key: 'value', color: '#3b82f6' });
-      if (!analysisHiddenLines.includes('diff1')) curves.push({ key: 'diff1', color: '#f97316' });
-      if (!analysisHiddenLines.includes('diff2')) curves.push({ key: 'diff2', color: '#ef4444' });
+      if (detectionType === 'initial') {
+        if (!analysisHiddenLines.includes('diffSignal')) curves.push({ key: 'diffSignal', color: '#ef4444' });
+      } else {
+        if (!analysisHiddenLines.includes('value')) curves.push({ key: 'value', color: '#3b82f6' });
+        if (!analysisHiddenLines.includes('diff2')) curves.push({ key: 'diff2', color: '#ef4444' });
+        if (!analysisHiddenLines.includes('diff1')) curves.push({ key: 'diff1', color: '#f97316' });
+      }
+    } else if (singleWaveType === 'user-debug') {
+      curves.push({ key: 'original', color: '#3b82f6' });
+      curves.push({ key: 'diff1', color: '#f97316' });
+      curves.push({ key: 'diff2', color: '#ef4444' });
+      curves.push({ key: 'diff3', color: '#8b5cf6' });
     } else {
       curves.push({ key: 'value', color: '#6366f1' });
     }
@@ -2397,10 +2454,11 @@ export function WaveformAnalyzer({ pointsCountFromTopology = 4, machineListFromT
     const rect = chartRef.current.getBoundingClientRect();
     const yAxisWidth = 25; // Recharts YAxis width
     const xAxisHeight = 30; // Recharts XAxis default height
+    const rightPanelWidth = singleWaveType === 'user-debug' ? 380 : 0;
     return {
       left: rect.left + margins.left + yAxisWidth,
       top: rect.top + margins.top,
-      width: rect.width - margins.left - margins.right - yAxisWidth,
+      width: rect.width - margins.left - margins.right - yAxisWidth - rightPanelWidth,
       height: rect.height - margins.top - margins.bottom - xAxisHeight,
     };
   };
@@ -2474,6 +2532,15 @@ export function WaveformAnalyzer({ pointsCountFromTopology = 4, machineListFromT
               if (!analysisHiddenLines.includes('alpha')) { curveKey = 'alpha'; color = '#3b82f6'; }
               else if (!analysisHiddenLines.includes('beta')) { curveKey = 'beta'; color = '#a855f7'; }
               else if (!analysisHiddenLines.includes('zero')) { curveKey = 'zero'; color = '#94a3b8'; }
+            } else if (singleWaveType === 'differential') {
+              if (detectionType === 'initial') {
+                curveKey = 'diffSignal';
+                color = '#ef4444';
+              } else {
+                if (!analysisHiddenLines.includes('value')) { curveKey = 'value'; color = '#3b82f6'; }
+                else if (!analysisHiddenLines.includes('diff2')) { curveKey = 'diff2'; color = '#ef4444'; }
+                else if (!analysisHiddenLines.includes('diff1')) { curveKey = 'diff1'; color = '#f97316'; }
+              }
             }
 
             const { ptX_px, ptY_px } = getPixelCoordinates(timeVal, displayVal, curveKey, rect, domains);
@@ -2529,7 +2596,7 @@ export function WaveformAnalyzer({ pointsCountFromTopology = 4, machineListFromT
           
           const curves = getActiveCurves();
           const subplotElements = chartRef.current ? chartRef.current.querySelectorAll('.flex-1.min-h-0.relative') : null;
-        const isMultiSubplot = (singleWaveType === 'differential' && subplotElements && subplotElements.length === 3) || (singleWaveType === 'user-debug' && subplotElements && subplotElements.length === 4);
+        const isMultiSubplot = (singleWaveType === 'differential' && subplotElements && subplotElements.length >= 1) || (singleWaveType === 'user-debug' && subplotElements && subplotElements.length === 4);
 
           for (const pt of focusData) {
             for (const curve of curves) {
@@ -2604,7 +2671,7 @@ export function WaveformAnalyzer({ pointsCountFromTopology = 4, machineListFromT
       let initialSubplotKey: string | null = null;
       if (singleWaveType === 'differential') {
         const subplotElements = chartRef.current ? chartRef.current.querySelectorAll('.flex-1.min-h-0.relative') : null;
-        const isMultiSubplot = (singleWaveType === 'differential' && subplotElements && subplotElements.length === 3) || (singleWaveType === 'user-debug' && subplotElements && subplotElements.length === 4);
+        const isMultiSubplot = (singleWaveType === 'differential' && subplotElements && subplotElements.length >= 1) || (singleWaveType === 'user-debug' && subplotElements && subplotElements.length === 4);
         if (subplotElements && subplotElements.length === 3) {
           const keys = ['value', 'diff2', 'diff1'];
           for (let i = 0; i < 3; i++) {
@@ -2637,7 +2704,7 @@ export function WaveformAnalyzer({ pointsCountFromTopology = 4, machineListFromT
         let clickedLabelAnn = null;
         
         const subplotElements = chartRef.current ? chartRef.current.querySelectorAll('.flex-1.min-h-0.relative') : null;
-        const isMultiSubplot = (singleWaveType === 'differential' && subplotElements && subplotElements.length === 3) || (singleWaveType === 'user-debug' && subplotElements && subplotElements.length === 4);
+        const isMultiSubplot = (singleWaveType === 'differential' && subplotElements && subplotElements.length >= 1) || (singleWaveType === 'user-debug' && subplotElements && subplotElements.length === 4);
         for (const ann of annotations) {
           let annXPx = 0;
           let annYPx = 0;
@@ -2800,6 +2867,14 @@ export function WaveformAnalyzer({ pointsCountFromTopology = 4, machineListFromT
             if (!analysisHiddenLines.includes('alpha')) { curveKey = 'alpha'; }
             else if (!analysisHiddenLines.includes('beta')) { curveKey = 'beta'; }
             else if (!analysisHiddenLines.includes('zero')) { curveKey = 'zero'; }
+          } else if (singleWaveType === 'differential') {
+            if (detectionType === 'initial') {
+              curveKey = 'diffSignal';
+            } else {
+              if (!analysisHiddenLines.includes('value')) { curveKey = 'value'; }
+              else if (!analysisHiddenLines.includes('diff2')) { curveKey = 'diff2'; }
+              else if (!analysisHiddenLines.includes('diff1')) { curveKey = 'diff1'; }
+            }
           }
 
           const { ptX_px, ptY_px } = getPixelCoordinates(timeVal, displayVal, curveKey, rect, domains);
@@ -2875,7 +2950,7 @@ export function WaveformAnalyzer({ pointsCountFromTopology = 4, machineListFromT
           let nearestVal = 0;
           
           const subplotElements = chartRef.current ? chartRef.current.querySelectorAll('.flex-1.min-h-0.relative') : null;
-        const isMultiSubplot = (singleWaveType === 'differential' && subplotElements && subplotElements.length === 3) || (singleWaveType === 'user-debug' && subplotElements && subplotElements.length === 4);
+        const isMultiSubplot = (singleWaveType === 'differential' && subplotElements && subplotElements.length >= 1) || (singleWaveType === 'user-debug' && subplotElements && subplotElements.length === 4);
           for (const pt of focusData) {
             let val = (pt as any)[ann.curveKey];
             if (val === undefined && ann.curveKey === 'value') val = pt.value;
@@ -2925,7 +3000,7 @@ export function WaveformAnalyzer({ pointsCountFromTopology = 4, machineListFromT
           let annYPx = 0;
 
           const subplotElements = chartRef.current ? chartRef.current.querySelectorAll('.flex-1.min-h-0.relative') : null;
-        const isMultiSubplot = (singleWaveType === 'differential' && subplotElements && subplotElements.length === 3) || (singleWaveType === 'user-debug' && subplotElements && subplotElements.length === 4);
+        const isMultiSubplot = (singleWaveType === 'differential' && subplotElements && subplotElements.length >= 1) || (singleWaveType === 'user-debug' && subplotElements && subplotElements.length === 4);
           if (isMultiSubplot) {
             const subIdx = getSubplotIndex(ann.curveKey || 'value');
             const subEl = subplotElements[subIdx];
@@ -2961,7 +3036,7 @@ export function WaveformAnalyzer({ pointsCountFromTopology = 4, machineListFromT
         if (cursorMode === 'data') {
           let isNearExistingPoint = false;
           const subplotElements = chartRef.current ? chartRef.current.querySelectorAll('.flex-1.min-h-0.relative') : null;
-        const isMultiSubplot = (singleWaveType === 'differential' && subplotElements && subplotElements.length === 3) || (singleWaveType === 'user-debug' && subplotElements && subplotElements.length === 4);
+        const isMultiSubplot = (singleWaveType === 'differential' && subplotElements && subplotElements.length >= 1) || (singleWaveType === 'user-debug' && subplotElements && subplotElements.length === 4);
           for (const ann of annotations) {
             let annXPx = 0;
             let annYPx = 0;
@@ -3014,8 +3089,21 @@ export function WaveformAnalyzer({ pointsCountFromTopology = 4, machineListFromT
             for (const h of activePoint.calibration.heads) {
               const displayVal = getCalibrationY(activePoint, h.index, singleWaveType);
               const timeVal = h.index / samplingFreq;
-              const headXPx = rect.left + ((timeVal - domains.x[0]) / (domains.x[1] - domains.x[0])) * rect.width;
-              const headYPx = rect.top + rect.height - ((displayVal - domains.y[0]) / (domains.y[1] - domains.y[0])) * rect.height;
+              
+              let curveKey = 'value';
+              if (singleWaveType === 'original') {
+                if (!analysisHiddenLines.includes('A')) { curveKey = 'A'; }
+                else if (!analysisHiddenLines.includes('B')) { curveKey = 'B'; }
+                else if (!analysisHiddenLines.includes('C')) { curveKey = 'C'; }
+              } else if (singleWaveType === 'karenbauer') {
+                if (!analysisHiddenLines.includes('alpha')) { curveKey = 'alpha'; }
+                else if (!analysisHiddenLines.includes('beta')) { curveKey = 'beta'; }
+                else if (!analysisHiddenLines.includes('zero')) { curveKey = 'zero'; }
+              } else if (singleWaveType === 'differential') {
+                curveKey = detectionType === 'initial' ? 'diffSignal' : 'value';
+              }
+              
+              const { ptX_px: headXPx, ptY_px: headYPx } = getPixelCoordinates(timeVal, displayVal, curveKey, rect, domains);
               
               if (Math.hypot(e.clientX - headXPx, e.clientY - headYPx) <= 15) {
                 isNearExistingPoint = true;
@@ -3038,8 +3126,7 @@ export function WaveformAnalyzer({ pointsCountFromTopology = 4, machineListFromT
           
           // Also check activeCalibratingPoint if displayed
           if (!isNearExistingPoint && activeCalibratingPoint) {
-            const calXPx = rect.left + ((activeCalibratingPoint.time - domains.x[0]) / (domains.x[1] - domains.x[0])) * rect.width;
-            const calYPx = rect.top + rect.height - ((activeCalibratingPoint.value - domains.y[0]) / (domains.y[1] - domains.y[0])) * rect.height;
+            const { ptX_px: calXPx, ptY_px: calYPx } = getPixelCoordinates(activeCalibratingPoint.time, activeCalibratingPoint.value, activeCalibratingPoint.curveKey, rect, domains);
             
             if (Math.hypot(e.clientX - calXPx, e.clientY - calYPx) <= 15) {
               isNearExistingPoint = true;
@@ -3070,7 +3157,7 @@ export function WaveformAnalyzer({ pointsCountFromTopology = 4, machineListFromT
 
         const curves = getActiveCurves();
         const subplotElements = chartRef.current ? chartRef.current.querySelectorAll('.flex-1.min-h-0.relative') : null;
-        const isMultiSubplot = (singleWaveType === 'differential' && subplotElements && subplotElements.length === 3) || (singleWaveType === 'user-debug' && subplotElements && subplotElements.length === 4);
+        const isMultiSubplot = (singleWaveType === 'differential' && subplotElements && subplotElements.length >= 1) || (singleWaveType === 'user-debug' && subplotElements && subplotElements.length === 4);
 
         for (const pt of focusData) {
           for (const curve of curves) {
@@ -3195,7 +3282,7 @@ export function WaveformAnalyzer({ pointsCountFromTopology = 4, machineListFromT
            
              const curves = getActiveCurves();
              const subplotElements = chartRef.current ? chartRef.current.querySelectorAll('.flex-1.min-h-0.relative') : null;
-        const isMultiSubplot = (singleWaveType === 'differential' && subplotElements && subplotElements.length === 3) || (singleWaveType === 'user-debug' && subplotElements && subplotElements.length === 4);
+        const isMultiSubplot = (singleWaveType === 'differential' && subplotElements && subplotElements.length >= 2) || (singleWaveType === 'user-debug' && subplotElements && subplotElements.length === 4);
              const rect = getChartRect();
            
              if (rect) {
@@ -3266,19 +3353,20 @@ export function WaveformAnalyzer({ pointsCountFromTopology = 4, machineListFromT
             
               // Check if we are in differential mode and find which subplot was dragged
               const subplotElements = chartRef.current ? chartRef.current.querySelectorAll('.flex-1.min-h-0.relative') : null;
-        const isMultiSubplot = (singleWaveType === 'differential' && subplotElements && subplotElements.length === 3) || (singleWaveType === 'user-debug' && subplotElements && subplotElements.length === 4);
+        const isMultiSubplot = (singleWaveType === 'differential' && subplotElements && subplotElements.length >= 1) || (singleWaveType === 'user-debug' && subplotElements && subplotElements.length === 4);
               let targetSubplotKey = null;
               let targetRect = rect;
               let targetDomains = domains;
             
               if (isMultiSubplot) {
                 const isUserDebug = singleWaveType === 'user-debug';
-                const expectedLen = isUserDebug ? 4 : 3;
-                const keys = isUserDebug ? ['original', 'diff1', 'diff2', 'diff3'] : ['value', 'diff2', 'diff1'];
+                const isInitialDiff = singleWaveType === "differential" && detectionType === "initial";
+                const expectedLen = isUserDebug ? 4 : (isInitialDiff ? 1 : 3);
+                const keys = isUserDebug ? ["original", "diff1", "diff2", "diff3"] : (isInitialDiff ? ["diffSignal"] : ["value", "diff2", "diff1"]);
                 for (let i = 0; i < expectedLen; i++) {
                   const subDivRect = subplotElements[i].getBoundingClientRect();
                   const subRect = getSubplotRect(i, subDivRect);
-                  if (dragStartPos.y >= subRect.top && dragStartPos.y <= subRect.top + subRect.height) {
+                  if (dragStartPos.y >= subDivRect.top && dragStartPos.y <= subDivRect.top + subDivRect.height) {
                     targetSubplotKey = keys[i];
                     targetRect = subRect;
                     targetDomains = { x: domains.x, y: getSubplotYDomain(keys[i]) as [number, number] };
@@ -3327,19 +3415,20 @@ export function WaveformAnalyzer({ pointsCountFromTopology = 4, machineListFromT
             
               // Check if we are in differential mode and find which subplot was dragged
               const subplotElements = chartRef.current ? chartRef.current.querySelectorAll('.flex-1.min-h-0.relative') : null;
-        const isMultiSubplot = (singleWaveType === 'differential' && subplotElements && subplotElements.length === 3) || (singleWaveType === 'user-debug' && subplotElements && subplotElements.length === 4);
+        const isMultiSubplot = (singleWaveType === 'differential' && subplotElements && subplotElements.length >= 1) || (singleWaveType === 'user-debug' && subplotElements && subplotElements.length === 4);
               let targetSubplotKey = null;
               let targetRect = rect;
               let targetDomains = domains;
             
               if (isMultiSubplot) {
                 const isUserDebug = singleWaveType === 'user-debug';
-                const expectedLen = isUserDebug ? 4 : 3;
-                const keys = isUserDebug ? ['original', 'diff1', 'diff2', 'diff3'] : ['value', 'diff2', 'diff1'];
+                const isInitialDiff = singleWaveType === 'differential' && detectionType === 'initial';
+                const expectedLen = isUserDebug ? 4 : (isInitialDiff ? 1 : 3);
+                const keys = isUserDebug ? ['original', 'diff1', 'diff2', 'diff3'] : (isInitialDiff ? ['diffSignal'] : ['value', 'diff2', 'diff1']);
                 for (let i = 0; i < expectedLen; i++) {
                   const subDivRect = subplotElements[i].getBoundingClientRect();
                   const subRect = getSubplotRect(i, subDivRect);
-                  if (dragStartPos.y >= subRect.top && dragStartPos.y <= subRect.top + subRect.height) {
+                  if (dragStartPos.y >= subDivRect.top && dragStartPos.y <= subDivRect.top + subDivRect.height) {
                     targetSubplotKey = keys[i];
                     targetRect = subRect;
                     targetDomains = { x: domains.x, y: getSubplotYDomain(keys[i]) as [number, number] };
@@ -3399,19 +3488,20 @@ export function WaveformAnalyzer({ pointsCountFromTopology = 4, machineListFromT
     const clientY = 'clientY' in e ? e.clientY : (e as any).clientY;
     
     const subplotElements = chartRef.current ? chartRef.current.querySelectorAll('.flex-1.min-h-0.relative') : null;
-        const isMultiSubplot = (singleWaveType === 'differential' && subplotElements && subplotElements.length === 3) || (singleWaveType === 'user-debug' && subplotElements && subplotElements.length === 4);
+        const isMultiSubplot = (singleWaveType === 'differential' && subplotElements && subplotElements.length >= 1) || (singleWaveType === 'user-debug' && subplotElements && subplotElements.length === 4);
     let targetSubplotKey: string | null = null;
     let targetRect = rect;
     let targetDomains = domains;
     
     if (isMultiSubplot) {
       const isUserDebug = singleWaveType === 'user-debug';
-      const expectedLen = isUserDebug ? 4 : 3;
-      const keys = isUserDebug ? ['original', 'diff1', 'diff2', 'diff3'] : ['value', 'diff2', 'diff1'];
+      const isInitialDiff = singleWaveType === 'differential' && detectionType === 'initial';
+      const expectedLen = isUserDebug ? 4 : (isInitialDiff ? 1 : 3);
+      const keys = isUserDebug ? ['original', 'diff1', 'diff2', 'diff3'] : (isInitialDiff ? ['diffSignal'] : ['value', 'diff2', 'diff1']);
       for (let i = 0; i < expectedLen; i++) {
         const subDivRect = subplotElements[i].getBoundingClientRect();
         const subRect = getSubplotRect(i, subDivRect);
-        if (clientY >= subRect.top && clientY <= subRect.top + subRect.height) {
+        if (clientY >= subDivRect.top && clientY <= subDivRect.top + subDivRect.height) {
           targetSubplotKey = keys[i];
           targetRect = subRect;
           targetDomains = { x: domains.x, y: getSubplotYDomain(keys[i]) as [number, number] };
@@ -3419,7 +3509,14 @@ export function WaveformAnalyzer({ pointsCountFromTopology = 4, machineListFromT
         }
       }
     }
-    
+
+    // Check if mouse is inside the chart drawing area
+    const isInsideX = clientX >= targetRect.left && clientX <= targetRect.left + targetRect.width;
+    const isInsideY = clientY >= targetRect.top && clientY <= targetRect.top + targetRect.height;
+    if (!isInsideX || !isInsideY) {
+      return; // Do not zoom if scrolling outside the active chart area (e.g. on the right panel)
+    }
+
     const xRange = targetDomains.x[1] - targetDomains.x[0];
     const zoomFactor = e.deltaY > 0 ? 1.2 : 0.8;
     
@@ -4040,72 +4137,72 @@ export function WaveformAnalyzer({ pointsCountFromTopology = 4, machineListFromT
                                     className="w-full px-0.5 pb-0.5 mt-[-1px] border border-gray-100 rounded-[1px] bg-white"
                                     style={{ height: `${settings.faultDetection.waveformChartHeight}px` }}
                                  >
-                                   <ResponsiveContainer width="100%" height="100%">
-                                     <LineChart data={formatWindowData(point, win.type)} margin={{ top: 0, right: 0, left: 0, bottom: 0 }}>
-                                       <XAxis dataKey="time" type="number" domain={listXDomain} hide />
-                                       <YAxis domain={['auto', 'auto']} hide />
-                                       {win.type === 'original' && (
-                                          <>
-                                             {!winHiddenLines.includes('A') && <Line type="monotone" dataKey="A" stroke={settings.faultDetection.curveColors.phaseA} strokeWidth={1.5} dot={false} isAnimationActive={false} />}
-                                             {!winHiddenLines.includes('B') && <Line type="monotone" dataKey="B" stroke={settings.faultDetection.curveColors.phaseB} strokeWidth={1.5} dot={false} isAnimationActive={false} />}
-                                             {!winHiddenLines.includes('C') && <Line type="monotone" dataKey="C" stroke={settings.faultDetection.curveColors.phaseC} strokeWidth={1.5} dot={false} isAnimationActive={false} />}
-                                          </>
-                                       )}
-                                       {win.type === 'karenbauer' && (
-                                          <>
-                                             {!winHiddenLines.includes('alpha') && <Line type="monotone" dataKey="alpha" stroke={settings.faultDetection.curveColors.alpha} strokeWidth={1.5} dot={false} isAnimationActive={false} />}
-                                             {!winHiddenLines.includes('beta') && <Line type="monotone" dataKey="beta" stroke={settings.faultDetection.curveColors.beta} strokeWidth={1.5} dot={false} isAnimationActive={false} />}
-                                             {!winHiddenLines.includes('zero') && <Line type="monotone" dataKey="zero" stroke={settings.faultDetection.curveColors.zero} strokeWidth={1.5} dot={false} isAnimationActive={false} />}
-                                          </>
-                                       )}
-                                       {win.type === 'teo' && !winHiddenLines.includes('teo') && (
-                                          <Line type="monotone" dataKey="teo" stroke={settings.faultDetection.curveColors.teo} strokeWidth={1.5} dot={false} isAnimationActive={false} />
-                                       )}
-                                       {win.type === 'differential' && (
-                                          <>
-                                             {!winHiddenLines.includes('diff1') && <Line type="monotone" dataKey="diff1" stroke="#f97316" strokeWidth={1.5} dot={false} isAnimationActive={false} />}
-                                             {!winHiddenLines.includes('diff2') && <Line type="monotone" dataKey="diff2" stroke="#ef4444" strokeWidth={1.5} dot={false} isAnimationActive={false} />}
-                                          </>
-                                       )}
-                                       {win.type === 'user-debug' && (
-                                          <>
-                                             {!winHiddenLines.includes('original') && <Line type="monotone" dataKey="original" stroke="#3b82f6" strokeWidth={1} dot={false} isAnimationActive={false} />}
-                                             {!winHiddenLines.includes('diff1') && <Line type="monotone" dataKey="diff1" stroke="#f97316" strokeWidth={1} dot={false} isAnimationActive={false} />}
-                                             {!winHiddenLines.includes('diff2') && <Line type="monotone" dataKey="diff2" stroke="#ef4444" strokeWidth={1} dot={false} isAnimationActive={false} />}
-                                             {!winHiddenLines.includes('diff3') && <Line type="monotone" dataKey="diff3" stroke="#8b5cf6" strokeWidth={1} dot={false} isAnimationActive={false} />}
-                                          </>
-                                       )}
-                                       {win.type === 'calibration' && (
-                                          <>
-                                             <Line type="monotone" dataKey="A" stroke={getCalibrationLineColor(settings.faultDetection.curveColors)} strokeWidth={1.5} dot={false} isAnimationActive={false} />
-                                             {point.calibration?.heads.map((h, i) => {
-                                                const originalVal = point.phaseA[h.index] || 0;
-                                                return (
-                                                  <ReferenceDot 
-                                                    key={`list-head-${i}`} 
-                                                    x={h.index / samplingFreq} 
-                                                    y={originalVal} 
-                                                    r={2} 
-                                                    fill="#ef4444" 
-                                                    stroke="#fff" 
-                                                    strokeWidth={1} 
-                                                  />
-                                                );
-                                             })}
-                                          </>
-                                       )}
-                                       {(win.type === 'noise' || win.type === 'denoise') && !winHiddenLines.includes('value') && (
-                                          <Line type="monotone" dataKey="value" stroke="#6366f1" strokeWidth={1.5} dot={false} isAnimationActive={false} />
-                                       )}
-                                       {win.type === 'pso-compare' && (
-                                          <>
-                                             {!winHiddenLines.includes('modal') && <Line type="monotone" dataKey="modal" stroke="#10b981" strokeWidth={1.2} dot={false} isAnimationActive={false} />}
-                                             {!winHiddenLines.includes('reconstructed') && <Line type="monotone" dataKey="reconstructed" stroke="#f59e0b" strokeWidth={1.2} dot={false} isAnimationActive={false} />}
-                                             {!winHiddenLines.includes('filtered') && <Line type="monotone" dataKey="filtered" stroke="#3b82f6" strokeWidth={1.2} dot={false} isAnimationActive={false} />}
-                                          </>
-                                       )}
-                                     </LineChart>
-                                   </ResponsiveContainer>
+                                    <ResponsiveContainer width="100%" height="100%">
+                                      <LineChart data={downsampleData(formatWindowData(point, win.type), 500)} margin={{ top: 0, right: 0, left: 0, bottom: 0 }}>
+                                        <XAxis dataKey="time" type="number" domain={listXDomain} hide />
+                                        <YAxis domain={['auto', 'auto']} hide />
+                                        {win.type === 'original' && (
+                                           <>
+                                              {!winHiddenLines.includes('A') && <Line type="monotone" dataKey="A" stroke={settings.faultDetection.curveColors.phaseA} strokeWidth={1.5} dot={false} isAnimationActive={false} />}
+                                              {!winHiddenLines.includes('B') && <Line type="monotone" dataKey="B" stroke={settings.faultDetection.curveColors.phaseB} strokeWidth={1.5} dot={false} isAnimationActive={false} />}
+                                              {!winHiddenLines.includes('C') && <Line type="monotone" dataKey="C" stroke={settings.faultDetection.curveColors.phaseC} strokeWidth={1.5} dot={false} isAnimationActive={false} />}
+                                           </>
+                                        )}
+                                        {win.type === 'karenbauer' && (
+                                           <>
+                                              {!winHiddenLines.includes('alpha') && <Line type="monotone" dataKey="alpha" stroke={settings.faultDetection.curveColors.alpha} strokeWidth={1.5} dot={false} isAnimationActive={false} />}
+                                              {!winHiddenLines.includes('beta') && <Line type="monotone" dataKey="beta" stroke={settings.faultDetection.curveColors.beta} strokeWidth={1.5} dot={false} isAnimationActive={false} />}
+                                              {!winHiddenLines.includes('zero') && <Line type="monotone" dataKey="zero" stroke={settings.faultDetection.curveColors.zero} strokeWidth={1.5} dot={false} isAnimationActive={false} />}
+                                           </>
+                                        )}
+                                        {win.type === 'teo' && !winHiddenLines.includes('teo') && (
+                                           <Line type="monotone" dataKey="teo" stroke={settings.faultDetection.curveColors.teo} strokeWidth={1.5} dot={false} isAnimationActive={false} />
+                                        )}
+                                        {win.type === 'differential' && (
+                                           <>
+                                              {!winHiddenLines.includes('diff1') && <Line type="monotone" dataKey="diff1" stroke="#f97316" strokeWidth={1.5} dot={false} isAnimationActive={false} />}
+                                              {!winHiddenLines.includes('diff2') && <Line type="monotone" dataKey="diff2" stroke="#ef4444" strokeWidth={1.5} dot={false} isAnimationActive={false} />}
+                                           </>
+                                        )}
+                                        {win.type === 'user-debug' && (
+                                           <>
+                                              {!winHiddenLines.includes('original') && <Line type="monotone" dataKey="original" stroke="#3b82f6" strokeWidth={1} dot={false} isAnimationActive={false} />}
+                                              {!winHiddenLines.includes('diff1') && <Line type="monotone" dataKey="diff1" stroke="#f97316" strokeWidth={1} dot={false} isAnimationActive={false} />}
+                                              {!winHiddenLines.includes('diff2') && <Line type="monotone" dataKey="diff2" stroke="#ef4444" strokeWidth={1} dot={false} isAnimationActive={false} />}
+                                              {!winHiddenLines.includes('diff3') && <Line type="monotone" dataKey="diff3" stroke="#8b5cf6" strokeWidth={1} dot={false} isAnimationActive={false} />}
+                                           </>
+                                        )}
+                                        {win.type === 'calibration' && (
+                                           <>
+                                              <Line type="monotone" dataKey="A" stroke={getCalibrationLineColor(settings.faultDetection.curveColors)} strokeWidth={1.5} dot={false} isAnimationActive={false} />
+                                              {point.calibration?.heads.map((h, i) => {
+                                                 const originalVal = point.phaseA[Math.round((h as any).peakIdx !== undefined ? (h as any).peakIdx : h.index)] || 0;
+                                                 return (
+                                                   <ReferenceDot 
+                                                     key={`list-head-${i}`} 
+                                                     x={h.index / samplingFreq} 
+                                                     y={originalVal} 
+                                                     r={2} 
+                                                     fill="#ef4444" 
+                                                     stroke="#fff" 
+                                                     strokeWidth={1} 
+                                                   />
+                                                 );
+                                              })}
+                                           </>
+                                        )}
+                                        {(win.type === 'noise' || win.type === 'denoise') && !winHiddenLines.includes('value') && (
+                                           <Line type="monotone" dataKey="value" stroke="#6366f1" strokeWidth={1.5} dot={false} isAnimationActive={false} />
+                                        )}
+                                        {win.type === 'pso-compare' && (
+                                           <>
+                                              {!winHiddenLines.includes('modal') && <Line type="monotone" dataKey="modal" stroke="#10b981" strokeWidth={1.2} dot={false} isAnimationActive={false} />}
+                                              {!winHiddenLines.includes('reconstructed') && <Line type="monotone" dataKey="reconstructed" stroke="#f59e0b" strokeWidth={1.2} dot={false} isAnimationActive={false} />}
+                                              {!winHiddenLines.includes('filtered') && <Line type="monotone" dataKey="filtered" stroke="#3b82f6" strokeWidth={1.2} dot={false} isAnimationActive={false} />}
+                                           </>
+                                        )}
+                                      </LineChart>
+                                    </ResponsiveContainer>
                                  </div>
                                </Card>
                              ))}
@@ -4259,7 +4356,7 @@ export function WaveformAnalyzer({ pointsCountFromTopology = 4, machineListFromT
                                  </button>
                                </div>
                              </div>
-                           ) : (singleWaveType === 'original' || singleWaveType === 'karenbauer' || singleWaveType === 'differential' || singleWaveType === 'pso-compare') && (
+                           ) : (singleWaveType === 'original' || singleWaveType === 'karenbauer' || singleWaveType === 'pso-compare') && (
                              <div className="flex items-center gap-3 px-3 py-1">
                                 {singleWaveType === 'original' ? (
                                   <>
@@ -4328,7 +4425,7 @@ export function WaveformAnalyzer({ pointsCountFromTopology = 4, machineListFromT
                       </div>
 
                       {/* Axis Controls (Annotate / Reset) - Top Right of Graph */}
-                      <div className={`absolute top-[80px] right-8 flex flex-col gap-1.5 z-40 transition-opacity duration-500 ${showControls ? 'opacity-100' : 'opacity-0'}`}>
+                      <div className={`absolute top-[80px] ${singleWaveType === 'user-debug' ? 'right-[400px]' : 'right-8'} flex flex-col gap-1.5 z-40 transition-opacity duration-500 ${showControls ? 'opacity-100' : 'opacity-0'}`}>
                         <div className="relative group/tooltip">
                           <Button 
                             size="icon" 
@@ -4445,80 +4542,91 @@ export function WaveformAnalyzer({ pointsCountFromTopology = 4, machineListFromT
                          )}
 
                          {singleWaveType === 'differential' ? (
-                          <div className="flex flex-col h-full w-full gap-2 p-1 pt-14">
-                            {/* 子图1: 线模行波 */}
-                            <div className="flex-1 min-h-0 relative">
-                              <div className="absolute right-4 top-1 text-[10px] font-semibold text-blue-600 bg-blue-50/90 border border-blue-100 px-1.5 py-0.5 rounded z-10">线模行波</div>
+                          
+                            detectionType === 'initial' ? (
                               <ResponsiveContainer width="100%" height="100%">
-                                <ComposedChart syncId="diffSync" data={focusData} margin={{ top: 10, right: 30, left: 20, bottom: 5 }} onMouseDown={handleChartMouseDown}>
+                                <ComposedChart syncId="diffSync" data={focusData} margin={margins} onMouseDown={handleChartMouseDown}>
                                   <defs>
-                                    <linearGradient id="caliShadingGradSub1" x1="0" y1="0" x2="0" y2="1">
-                                      <stop offset="0%" stopColor="#3b82f6" stopOpacity={0.6}/>
-                                      <stop offset="100%" stopColor="#3b82f6" stopOpacity={0.1}/>
+                                    <linearGradient id="caliShadingGradSubInitial" x1="0" y1="0" x2="0" y2="1">
+                                      <stop offset="0%" stopColor="#ef4444" stopOpacity={0.6}/>
+                                      <stop offset="100%" stopColor="#ef4444" stopOpacity={0.1}/>
                                     </linearGradient>
                                   </defs>
                                   <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false} />
-                                  <XAxis dataKey="time" type="number" domain={actualDomains.x} allowDataOverflow hide />
-                                  <YAxis width={25} stroke="#94a3b8" tick={{fontSize: 9, fill: '#64748b'}} domain={getSubplotYDomain('value')} allowDataOverflow tickFormatter={(val) => Math.round(val).toString()} />
+                                  <XAxis 
+                                    dataKey="time" 
+                                    type="number" 
+                                    domain={actualDomains.x} 
+                                    allowDataOverflow 
+                                    stroke="#94a3b8" 
+                                    tickFormatter={(val) => val.toFixed(3)} 
+                                    tick={{fontSize: 9, fill: '#64748b'}}
+                                    label={{ value: '时间 (s)', position: 'insideBottomRight', offset: -5, fontSize: 10, fill: '#64748b' }}
+                                  />
+                                  <YAxis width={25} stroke="#94a3b8" tick={{fontSize: 9, fill: '#64748b'}} domain={getSubplotYDomain('diffSignal')} allowDataOverflow tickFormatter={(val) => Math.round(val).toString()} />
                                   
-                                  {/* Wave Head Shading (matching Figure 5.9) */}
-                                  {activePoint?.calibration?.heads?.map((h: any, i: number) => {
-                                    const sIdx = h.startIdx !== undefined ? h.startIdx : Math.max(0, h.index - 8);
-                                    const sVal = getCalibrationY(activePoint, sIdx, 'differential', 'value');
-                                    return (
-                                      <Area
-                                        key={`area-shading-diff-${i}`}
-                                        type="linear"
-                                        dataKey={`caliShading_${i}`}
-                                        stroke="none"
-                                        fill="url(#caliShadingGradSub1)"
-                                        baseValue={sVal}
-                                        isAnimationActive={false}
-                                        activeDot={false}
-                                        connectNulls={false}
-                                      />
-                                    );
-                                  })}
-
-                                  {!analysisHiddenLines.includes('value') && (
-                                    <Line key={`val-${animationKey}`} name="线模行波" type="linear" dataKey="value" stroke="#3b82f6" strokeWidth={1.5} dot={false} activeDot={false} isAnimationActive={false} />
+                                  {!analysisHiddenLines.includes('diffSignal') && (
+                                    <Line key={`diffSignal-${animationKey}`} name="差分特征" type="linear" dataKey="diffSignal" stroke="#ef4444" strokeWidth={1.5} dot={false} activeDot={false} isAnimationActive={false} />
                                   )}
 
-                                  {/* Vertical Reference Lines for alignment correspondence */}
+                                  {/* Vertical Reference Lines */}
                                   {activePoint?.calibration?.heads?.map((h: any, i: number) => {
-                                    const xVal = h.index / samplingFreq;
+                                    const displayIdx = h.index;
+                                    const xVal = displayIdx / samplingFreq;
                                     return (
                                       <ReferenceLine
-                                        key={`refline-diff1-${i}`}
+                                        key={`refline-diff-init-${i}`}
                                         x={xVal}
-                                        stroke="#3b82f6"
+                                        stroke="#ef4444"
                                         strokeDasharray="3 3"
                                         strokeWidth={1}
-                                        label={{ value: `波头 ${i + 1}`, fill: '#3b82f6', fontSize: 9, position: 'top' }}
+                                        label={{ value: `初始波头`, fill: '#ef4444', fontSize: 9, position: 'top' }}
                                       />
                                     );
                                   })}
 
-                                  {/* Render custom annotations for Subplot 1 */}
-                                  {annotations.filter(ann => ann.curveKey === 'value').map((ann) => {
-                                    const isSelected = selectedAnnotationId === ann.id;
-                                    const labelPos = ann.labelPosition || 'top-right';
-                                    const layout = getLabelLayout(labelPos, isSelected ? 5 : 4);
+                                  {/* Wave Head markers (Red Dots) */}
+                                  {!isCalibratingDrag && activePoint?.calibration?.heads?.map((h, i) => {
+                                    const displayIdx = h.index;
+                                    const displayVal = getCalibrationY(activePoint, displayIdx, 'differential', 'diffSignal');
+                                    const timeVal = displayIdx / samplingFreq;
+                                    const showLabel = manualCalibratingPointId === activePoint?.id;
+                                    const labelPos = h.labelPosition || 'top-right';
+                                    const layout = getLabelLayout(labelPos, 5);
                                     return (
-                                      <ReferenceDot
-                                        key={`ann-${ann.id}`}
-                                        x={ann.time}
-                                        y={ann.value}
+                                      <ReferenceDot 
+                                        key={`head-init-${i}`} 
+                                        x={timeVal} 
+                                        y={displayVal} 
                                         shape={(props: any) => {
                                           const { cx, cy } = props;
                                           return (
                                             <g>
-                                              <circle cx={cx} cy={cy} r={isSelected ? 5 : 4} fill={ann.color || "#3b82f6"} stroke={isSelected ? "#000" : "#fff"} strokeWidth={2} style={{ cursor: cursorMode === 'data' ? 'move' : 'default' }} />
-                                              <g style={{ cursor: cursorMode === 'data' ? 'move' : 'default' }}>
-                                                <rect x={cx + layout.rx} y={cy + layout.ry} width={layout.width} height={layout.height} fill="white" stroke={isSelected ? "#ef4444" : ann.color || "#3b82f6"} strokeWidth={0.8} rx={4} />
-                                                <text x={cx + layout.rx + 35} y={cy + layout.ry + 10} textAnchor="middle" fontSize={9} fill="#374151">x: {ann.time.toFixed(timePrecision)}</text>
-                                                <text x={cx + layout.rx + 35} y={cy + layout.ry + 21} textAnchor="middle" fontSize={9} fill="#374151">y: {ann.value.toFixed(3)}</text>
-                                              </g>
+                                              <circle 
+                                                cx={cx} 
+                                                cy={cy} 
+                                                r={5} 
+                                                fill="#ef4444" 
+                                                stroke="#fff" 
+                                                strokeWidth={2} 
+                                                style={{ cursor: manualCalibratingPointId ? 'pointer' : 'default' }} 
+                                              />
+                                              {showLabel && (
+                                                <g style={{ cursor: 'move' }}>
+                                                  <rect 
+                                                    x={cx + layout.rx} 
+                                                    y={cy + layout.ry} 
+                                                    width={layout.width} 
+                                                    height={layout.height} 
+                                                    fill="white" 
+                                                    stroke="#ef4444" 
+                                                    strokeWidth={0.8} 
+                                                    rx={4} 
+                                                  />
+                                                  <text x={cx + layout.rx + 35} y={cy + layout.ry + 10} textAnchor="middle" fontSize={9} fill="#374151">x: {timeVal.toFixed(timePrecision)}</text>
+                                                  <text x={cx + layout.rx + 35} y={cy + layout.ry + 21} textAnchor="middle" fontSize={9} fill="#ef4444">y: {displayVal.toFixed(3)}</text>
+                                                </g>
+                                              )}
                                             </g>
                                           );
                                         }}
@@ -4526,92 +4634,30 @@ export function WaveformAnalyzer({ pointsCountFromTopology = 4, machineListFromT
                                     );
                                   })}
 
-                                  {/* Render hover dot for Subplot 1 */}
-                                  {hoverDataPoint && hoverDataPoint.curveKey === 'value' && !draggingAnnotationId && !isCalibratingDrag && (
+                                  {isCalibratingDrag && activeCalibratingPoint && (
                                     <ReferenceDot
-                                      key="hover-dot-sub1"
-                                      x={hoverDataPoint.time}
-                                      y={hoverDataPoint.value}
+                                      key="dragging-calibration-diff-init"
+                                      x={activeCalibratingPoint.time}
+                                      y={activeCalibratingPoint.value}
                                       shape={(props: any) => {
                                         const { cx, cy } = props;
-                                        const layout = getLabelLayout('top-right', 4);
+                                        const layout = getLabelLayout('top-right', 5);
                                         return (
                                           <g>
-                                            <circle cx={cx} cy={cy} r={4} fill={hoverDataPoint.color || "#3b82f6"} stroke="#fff" strokeWidth={1} pointerEvents="none" />
+                                            <circle cx={cx} cy={cy} r={5} fill={activeCalibratingPoint.color || "#ef4444"} stroke="#fff" strokeWidth={2} />
                                             <g style={{ pointerEvents: 'none' }}>
-                                              <rect x={cx + layout.rx} y={cy + layout.ry} width={layout.width} height={layout.height} fill="white" stroke={hoverDataPoint.color || "#3b82f6"} strokeWidth={0.8} rx={4} />
-                                              <text x={cx + layout.rx + 35} y={cy + layout.ry + 10} textAnchor="middle" fontSize={9} fill="#374151">x: {hoverDataPoint.time.toFixed(timePrecision)}</text>
-                                              <text x={cx + layout.rx + 35} y={cy + layout.ry + 21} textAnchor="middle" fontSize={9} fill="#374151">y: {hoverDataPoint.value.toFixed(3)}</text>
+                                              <rect x={cx + layout.rx} y={cy + layout.ry} width={layout.width} height={layout.height} fill="white" stroke={activeCalibratingPoint.color || "#ef4444"} strokeWidth={0.8} rx={4} />
+                                              <text x={cx + layout.rx + 35} y={cy + layout.ry + 10} textAnchor="middle" fontSize={9} fill="#374151">x: {activeCalibratingPoint.time.toFixed(timePrecision)}</text>
+                                              <text x={cx + layout.rx + 35} y={cy + layout.ry + 21} textAnchor="middle" fontSize={9} fill={activeCalibratingPoint.color || "#ef4444"}>y: {activeCalibratingPoint.value.toFixed(3)}</text>
                                             </g>
                                           </g>
                                         );
                                       }}
                                     />
                                   )}
-                                </ComposedChart>
-                              </ResponsiveContainer>
-                            </div>
-                            
-                            {/* 子图2: 二阶差分 */}
-                            <div className="flex-1 min-h-0 relative">
-                              <div className="absolute right-4 top-1 text-[10px] font-semibold text-red-600 bg-red-50/90 border border-red-100 px-1.5 py-0.5 rounded z-10">二阶差分</div>
-                              <ResponsiveContainer width="100%" height="100%">
-                                <LineChart syncId="diffSync" data={focusData} margin={{ top: 5, right: 30, left: 20, bottom: 5 }} onMouseDown={handleChartMouseDown}>
-                                  <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false} />
-                                  <XAxis dataKey="time" type="number" domain={actualDomains.x} allowDataOverflow hide />
-                                  <YAxis width={25} stroke="#94a3b8" tick={{fontSize: 9, fill: '#64748b'}} domain={getSubplotYDomain('diff2')} allowDataOverflow tickFormatter={(val) => Math.round(val).toString()} />
-                                  {!analysisHiddenLines.includes('diff2') && (
-                                    <Line key={`diff2-${animationKey}`} name="二阶差分" type="linear" dataKey="diff2" stroke="#ef4444" strokeWidth={1.5} dot={false} activeDot={false} isAnimationActive={false} />
-                                  )}
 
-                                  {/* Vertical Reference Lines for alignment correspondence */}
-                                  {activePoint?.calibration?.heads?.map((h: any, i: number) => {
-                                    const xVal = h.index / samplingFreq;
-                                    return (
-                                      <ReferenceLine
-                                        key={`refline-diff2-${i}`}
-                                        x={xVal}
-                                        stroke="#3b82f6"
-                                        strokeDasharray="3 3"
-                                        strokeWidth={1}
-                                      />
-                                    );
-                                  })}
-
-                                  {/* Starting point (红色圆点) */}
-                                  {activePoint?.calibration?.heads?.flatMap((h: any, i: number) => {
-                                    const dots = [];
-                                    if (h.point1 !== undefined) {
-                                      const xVal = h.point1 / samplingFreq;
-                                      const yVal = getCalibrationY(activePoint, h.point1, 'differential', 'diff2') || 0;
-                                      dots.push({ key: `start-diff2-p1-${i}`, x: xVal, y: yVal, color: '#ef4444' });
-                                    }
-                                    if (h.point2 !== undefined) {
-                                      const xVal = h.point2 / samplingFreq;
-                                      const yVal = getCalibrationY(activePoint, h.point2, 'differential', 'diff2') || 0;
-                                      dots.push({ key: `start-diff2-p2-${i}`, x: xVal, y: yVal, color: '#ef4444' });
-                                    }
-                                    if (dots.length === 0) {
-                                      const startIdx = h.startIdx !== undefined ? h.startIdx : Math.max(0, h.index - 5);
-                                      const xVal = startIdx / samplingFreq;
-                                      const yVal = getCalibrationY(activePoint, startIdx, 'differential', 'diff2') || 0;
-                                      dots.push({ key: `start-diff2-fallback-${i}`, x: xVal, y: yVal, color: '#ef4444' });
-                                    }
-                                    return dots.map((d) => (
-                                      <ReferenceDot
-                                        key={d.key}
-                                        x={d.x}
-                                        y={d.y}
-                                        r={4}
-                                        fill={d.color}
-                                        stroke="#fff"
-                                        strokeWidth={1.5}
-                                      />
-                                    ));
-                                  })}
-
-                                  {/* Render custom annotations for Subplot 2 */}
-                                  {annotations.filter(ann => ann.curveKey === 'diff2').map((ann) => {
+                                  {/* Render custom annotations for diffSignal */}
+                                  {annotations.filter(ann => ann.curveKey === 'diffSignal').map((ann) => {
                                     const isSelected = selectedAnnotationId === ann.id;
                                     const labelPos = ann.labelPosition || 'top-right';
                                     const layout = getLabelLayout(labelPos, isSelected ? 5 : 4);
@@ -4637,10 +4683,10 @@ export function WaveformAnalyzer({ pointsCountFromTopology = 4, machineListFromT
                                     );
                                   })}
 
-                                  {/* Render hover dot for Subplot 2 */}
-                                  {hoverDataPoint && hoverDataPoint.curveKey === 'diff2' && !draggingAnnotationId && !isCalibratingDrag && (
+                                  {/* Render hover dot for diffSignal */}
+                                  {hoverDataPoint && hoverDataPoint.curveKey === 'diffSignal' && !draggingAnnotationId && !isCalibratingDrag && (
                                     <ReferenceDot
-                                      key="hover-dot-sub2"
+                                      key="hover-dot-diff-init"
                                       x={hoverDataPoint.time}
                                       y={hoverDataPoint.value}
                                       shape={(props: any) => {
@@ -4659,13 +4705,182 @@ export function WaveformAnalyzer({ pointsCountFromTopology = 4, machineListFromT
                                       }}
                                     />
                                   )}
+                                </ComposedChart>
+                              </ResponsiveContainer>
+                            ) : (
+<div className="flex flex-col h-full w-full gap-2 p-1 pt-14">
+                            {/* 子图1: 线模行波 */}
+                            <div className="flex-1 min-h-0 relative">
+                                <div className="absolute right-4 top-1 text-[10px] font-semibold text-blue-600 bg-blue-50/90 border border-blue-100 px-1.5 py-0.5 rounded z-10">线模行波</div>
+                                <ResponsiveContainer width="100%" height="100%">
+                                  <ComposedChart syncId="diffSync" data={focusData} margin={{ top: 10, right: 30, left: 20, bottom: 5 }} onMouseDown={handleChartMouseDown}>
+                                    <defs>
+                                      <linearGradient id="caliShadingGradSub1" x1="0" y1="0" x2="0" y2="1">
+                                        <stop offset="0%" stopColor="#3b82f6" stopOpacity={0.6}/>
+                                        <stop offset="100%" stopColor="#3b82f6" stopOpacity={0.1}/>
+                                      </linearGradient>
+                                    </defs>
+                                    <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false} />
+                                    <XAxis dataKey="time" type="number" domain={actualDomains.x} allowDataOverflow hide />
+                                    <YAxis width={25} stroke="#94a3b8" tick={{fontSize: 9, fill: '#64748b'}} domain={getSubplotYDomain('value')} allowDataOverflow tickFormatter={(val) => Math.round(val).toString()} />
+                                    
+                                    {/* Wave Head Shading (matching Figure 5.9) */}
+                                    {activePoint?.calibration?.heads?.map((h: any, i: number) => {
+                                      const sIdx = h.startIdx !== undefined ? h.startIdx : Math.max(0, h.index - 8);
+                                      const sVal = getCalibrationY(activePoint, sIdx, 'differential', 'value');
+                                      return (
+                                        <Area
+                                          key={`area-shading-diff-${i}`}
+                                          type="linear"
+                                          dataKey={`caliShading_${i}`}
+                                          stroke="none"
+                                          fill="url(#caliShadingGradSub1)"
+                                          baseValue={sVal}
+                                          isAnimationActive={false}
+                                          activeDot={false}
+                                          connectNulls={false}
+                                        />
+                                      );
+                                    })}
+
+                                    {!analysisHiddenLines.includes('value') && (
+                                      <Line key={`val-${animationKey}`} name="线模行波" type="linear" dataKey="value" stroke="#3b82f6" strokeWidth={1.5} dot={false} activeDot={false} isAnimationActive={false} />
+                                    )}
+
+                                    {/* Vertical Reference Lines for alignment correspondence */}
+                                    {activePoint?.calibration?.heads?.map((h: any, i: number) => {
+                                      const displayIdx = h.index;
+                                      const xVal = displayIdx / samplingFreq;
+                                      return (
+                                        <ReferenceLine
+                                          key={`refline-diff1-${i}`}
+                                          x={xVal}
+                                          stroke="#3b82f6"
+                                          strokeDasharray="3 3"
+                                          strokeWidth={1}
+                                          label={{ value: `波头 ${i + 1}`, fill: '#3b82f6', fontSize: 9, position: 'top' }}
+                                        />
+                                      );
+                                    })}
+
+                                    {/* Wave Head markers (Red Dots) */}
+                                    {activePoint?.calibration?.heads?.map((h, i) => {
+                                      const displayIdx = h.index;
+                                      const displayVal = getCalibrationY(activePoint, displayIdx, 'differential', 'value');
+                                      const timeVal = displayIdx / samplingFreq;
+                                      return (
+                                        <ReferenceDot 
+                                          key={`head-sub1-${i}`} 
+                                          x={timeVal} 
+                                          y={displayVal} 
+                                          r={4}
+                                          fill="#ef4444" 
+                                          stroke="#fff" 
+                                          strokeWidth={1.5} 
+                                        />
+                                      );
+                                    })}
+
+                                    {/* Render custom annotations for Subplot 1 */}
+                                    {annotations.filter(ann => ann.curveKey === 'value').map((ann) => {
+                                      const isSelected = selectedAnnotationId === ann.id;
+                                      const labelPos = ann.labelPosition || 'top-right';
+                                      const layout = getLabelLayout(labelPos, isSelected ? 5 : 4);
+                                      return (
+                                        <ReferenceDot
+                                          key={`ann-${ann.id}`}
+                                          x={ann.time}
+                                          y={ann.value}
+                                          shape={(props: any) => {
+                                            const { cx, cy } = props;
+                                            return (
+                                              <g>
+                                                <circle cx={cx} cy={cy} r={isSelected ? 5 : 4} fill={ann.color || "#3b82f6"} stroke={isSelected ? "#000" : "#fff"} strokeWidth={2} style={{ cursor: cursorMode === 'data' ? 'move' : 'default' }} />
+                                                <g style={{ cursor: cursorMode === 'data' ? 'move' : 'default' }}>
+                                                  <rect x={cx + layout.rx} y={cy + layout.ry} width={layout.width} height={layout.height} fill="white" stroke={isSelected ? "#ef4444" : ann.color || "#3b82f6"} strokeWidth={0.8} rx={4} />
+                                                  <text x={cx + layout.rx + 35} y={cy + layout.ry + 10} textAnchor="middle" fontSize={9} fill="#374151">x: {ann.time.toFixed(timePrecision)}</text>
+                                                  <text x={cx + layout.rx + 35} y={cy + layout.ry + 21} textAnchor="middle" fontSize={9} fill="#374151">y: {ann.value.toFixed(3)}</text>
+                                                </g>
+                                              </g>
+                                            );
+                                          }}
+                                        />
+                                      );
+                                    })}
+
+                                    {/* Render hover dot for Subplot 1 */}
+                                    {hoverDataPoint && hoverDataPoint.curveKey === 'value' && !draggingAnnotationId && !isCalibratingDrag && (
+                                      <ReferenceDot
+                                        key="hover-dot-sub1"
+                                        x={hoverDataPoint.time}
+                                        y={hoverDataPoint.value}
+                                        shape={(props: any) => {
+                                          const { cx, cy } = props;
+                                          const layout = getLabelLayout('top-right', 4);
+                                          return (
+                                            <g>
+                                              <circle cx={cx} cy={cy} r={4} fill={hoverDataPoint.color || "#3b82f6"} stroke="#fff" strokeWidth={1} pointerEvents="none" />
+                                              <g style={{ pointerEvents: 'none' }}>
+                                                <rect x={cx + layout.rx} y={cy + layout.ry} width={layout.width} height={layout.height} fill="white" stroke={hoverDataPoint.color || "#3b82f6"} strokeWidth={0.8} rx={4} />
+                                                <text x={cx + layout.rx + 35} y={cy + layout.ry + 10} textAnchor="middle" fontSize={9} fill="#374151">x: {hoverDataPoint.time.toFixed(timePrecision)}</text>
+                                                <text x={cx + layout.rx + 35} y={cy + layout.ry + 21} textAnchor="middle" fontSize={9} fill="#374151">y: {hoverDataPoint.value.toFixed(3)}</text>
+                                              </g>
+                                            </g>
+                                          );
+                                        }}
+                                      />
+                                    )}
+                                  </ComposedChart>
+                                </ResponsiveContainer>
+                              </div>
+                            
+                            {/* 子图2: 一阶差分 (initial mode) 或 二阶差分 (other modes) */}
+                            <div className="flex-1 min-h-0 relative">
+                              <div className="absolute right-4 top-1 text-[10px] font-semibold text-orange-600 bg-orange-50/90 border border-orange-100 px-1.5 py-0.5 rounded z-10">
+                                 {detectionType === 'initial' ? '一阶差分' : '二阶差分'}
+                               </div>
+                              <ResponsiveContainer width="100%" height="100%">
+                                <LineChart 
+                                  syncId="diffSync" 
+                                  data={focusData} 
+                                  margin={{ top: 5, right: 30, left: 20, bottom: 5 }} 
+                                  onMouseDown={handleChartMouseDown}
+                                >
+                                  <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false} />
+                                  <XAxis dataKey="time" type="number" domain={actualDomains.x} allowDataOverflow hide stroke="#94a3b8" />
+                                  <YAxis width={25} stroke="#94a3b8" tick={{fontSize: 9, fill: '#64748b'}} domain={getSubplotYDomain(detectionType === 'initial' ? 'diff1' : 'diff2')} allowDataOverflow tickFormatter={(val) => Math.round(val).toString()} />
+                                  {!(detectionType === 'initial' ? analysisHiddenLines.includes('diff1') : analysisHiddenLines.includes('diff2')) && (
+                                    <Line key={`sub2-line-${animationKey}`} name={detectionType === 'initial' ? '一阶差分' : '二阶差分'} type="linear" dataKey={detectionType === 'initial' ? 'diff1' : 'diff2'} stroke={detectionType === 'initial' ? '#f97316' : '#ef4444'} strokeWidth={1.5} dot={false} activeDot={false} isAnimationActive={false} />
+                                  )}
+
+                                  {/* Vertical Reference Lines */}
+                                  {activePoint?.calibration?.heads?.map((h: any, i: number) => {
+                                    const displayIdx = h.index;
+                                    const xVal = displayIdx / samplingFreq;
+                                    return (
+                                      <ReferenceLine key={`refline-sub2-${i}`} x={xVal} stroke="#3b82f6" strokeDasharray="3 3" strokeWidth={1} />
+                                    );
+                                  })}
+
+                                  {/* Wave Head markers (Red Dots) */}
+                                  {activePoint?.calibration?.heads?.map((h, i) => {
+                                    const displayIdx = h.index;
+                                    const curveKey = detectionType === 'initial' ? 'diff1' : 'diff2';
+                                    const displayVal = getCalibrationY(activePoint, displayIdx, 'differential', curveKey);
+                                    const timeVal = displayIdx / samplingFreq;
+                                    return (
+                                      <ReferenceDot key={`head-sub2-${i}`} x={timeVal} y={displayVal} r={4} fill="#ef4444" stroke="#fff" strokeWidth={1.5} />
+                                    );
+                                  })}
                                 </LineChart>
                               </ResponsiveContainer>
                             </div>
 
-                            {/* 子图3: 一阶差分 */}
+                            {/* 子图3: 差分特征波 (initial mode) 或 一阶差分 (other modes) */}
                             <div className="flex-1 min-h-0 relative">
-                              <div className="absolute right-4 top-1 text-[10px] font-semibold text-orange-600 bg-orange-50/90 border border-orange-100 px-1.5 py-0.5 rounded z-10">一阶差分</div>
+                              <div className="absolute right-4 top-1 text-[10px] font-semibold text-red-600 bg-red-50/90 border border-red-100 px-1.5 py-0.5 rounded z-10">
+                                 {detectionType === 'initial' ? (processingMethod === 'teo' ? 'TEO 能量算子' : processingMethod === 'wavelet' ? `小波变换 (${waveletType})` : '差分特征波 (Double Diff)') : '一阶差分'}
+                               </div>
                               <ResponsiveContainer width="100%" height="100%">
                                 <LineChart syncId="diffSync" data={focusData} margin={{ top: 5, right: 30, left: 20, bottom: 20 }} onMouseDown={handleChartMouseDown}>
                                   <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false} />
@@ -4679,44 +4894,33 @@ export function WaveformAnalyzer({ pointsCountFromTopology = 4, machineListFromT
                                     tick={{fontSize: 9, fill: '#64748b'}}
                                     label={{ value: '时间 (s)', position: 'insideBottomRight', offset: -5, fontSize: 10, fill: '#64748b' }}
                                   />
-                                  <YAxis width={25} stroke="#94a3b8" tick={{fontSize: 9, fill: '#64748b'}} domain={getSubplotYDomain('diff1')} allowDataOverflow tickFormatter={(val) => Math.round(val).toString()} />
-                                  {!analysisHiddenLines.includes('diff1') && (
-                                    <Line key={`diff1-${animationKey}`} name="一阶差分" type="linear" dataKey="diff1" stroke="#f97316" strokeWidth={1.5} dot={false} activeDot={false} isAnimationActive={false} />
+                                  <YAxis width={25} stroke="#94a3b8" tick={{fontSize: 9, fill: '#64748b'}} domain={getSubplotYDomain(detectionType === 'initial' ? 'diffSignal' : 'diff1')} allowDataOverflow tickFormatter={(val) => Math.round(val).toString()} />
+                                  {!(detectionType === 'initial' ? analysisHiddenLines.includes('diffSignal') : analysisHiddenLines.includes('diff1')) && (
+                                    <Line key={`sub3-line-${animationKey}`} name={detectionType === 'initial' ? '差分特征' : '一阶差分'} type="linear" dataKey={detectionType === 'initial' ? 'diffSignal' : 'diff1'} stroke={detectionType === 'initial' ? '#ef4444' : '#f97316'} strokeWidth={1.5} dot={false} activeDot={false} isAnimationActive={false} />
                                   )}
 
-                                  {/* Vertical Reference Lines for alignment correspondence */}
+                                  {/* Vertical Reference Lines */}
                                   {activePoint?.calibration?.heads?.map((h: any, i: number) => {
-                                    const xVal = h.index / samplingFreq;
+                                    const displayIdx = h.index;
+                                    const xVal = displayIdx / samplingFreq;
                                     return (
-                                      <ReferenceLine
-                                        key={`refline-diff3-${i}`}
-                                        x={xVal}
-                                        stroke="#3b82f6"
-                                        strokeDasharray="3 3"
-                                        strokeWidth={1}
-                                      />
+                                      <ReferenceLine key={`refline-sub3-${i}`} x={xVal} stroke="#3b82f6" strokeDasharray="3 3" strokeWidth={1} />
                                     );
                                   })}
 
-                                  {/* Peak point (黑色圆点) */}
-                                  {activePoint?.calibration?.heads?.map((h: any, i: number) => {
-                                    const xVal = h.index / samplingFreq;
-                                    const yVal = getCalibrationY(activePoint, h.index, 'differential', 'diff1');
+                                  {/* Wave Head markers (Red Dots) */}
+                                  {activePoint?.calibration?.heads?.map((h, i) => {
+                                    const displayIdx = h.index;
+                                    const curveKey = detectionType === 'initial' ? 'diffSignal' : 'diff1';
+                                    const displayVal = getCalibrationY(activePoint, displayIdx, 'differential', curveKey);
+                                    const timeVal = displayIdx / samplingFreq;
                                     return (
-                                      <ReferenceDot
-                                        key={`head-diff3-${i}`}
-                                        x={xVal}
-                                        y={yVal}
-                                        r={4}
-                                        fill="#000000"
-                                        stroke="#fff"
-                                        strokeWidth={1.5}
-                                      />
+                                      <ReferenceDot key={`head-sub3-${i}`} x={timeVal} y={displayVal} r={4} fill="#ef4444" stroke="#fff" strokeWidth={1.5} />
                                     );
                                   })}
 
                                   {/* Render custom annotations for Subplot 3 */}
-                                  {annotations.filter(ann => ann.curveKey === 'diff1').map((ann) => {
+                                  {annotations.filter(ann => ann.curveKey === (detectionType === 'initial' ? 'diffSignal' : 'diff1')).map((ann) => {
                                     const isSelected = selectedAnnotationId === ann.id;
                                     const labelPos = ann.labelPosition || 'top-right';
                                     const layout = getLabelLayout(labelPos, isSelected ? 5 : 4);
@@ -4729,9 +4933,9 @@ export function WaveformAnalyzer({ pointsCountFromTopology = 4, machineListFromT
                                           const { cx, cy } = props;
                                           return (
                                             <g>
-                                              <circle cx={cx} cy={cy} r={isSelected ? 5 : 4} fill={ann.color || "#f97316"} stroke={isSelected ? "#000" : "#fff"} strokeWidth={2} style={{ cursor: cursorMode === 'data' ? 'move' : 'default' }} />
+                                              <circle cx={cx} cy={cy} r={isSelected ? 5 : 4} fill={ann.color || "#ef4444"} stroke={isSelected ? "#000" : "#fff"} strokeWidth={2} style={{ cursor: cursorMode === 'data' ? 'move' : 'default' }} />
                                               <g style={{ cursor: cursorMode === 'data' ? 'move' : 'default' }}>
-                                                <rect x={cx + layout.rx} y={cy + layout.ry} width={layout.width} height={layout.height} fill="white" stroke={isSelected ? "#ef4444" : ann.color || "#f97316"} strokeWidth={0.8} rx={4} />
+                                                <rect x={cx + layout.rx} y={cy + layout.ry} width={layout.width} height={layout.height} fill="white" stroke={isSelected ? "#ef4444" : ann.color || "#ef4444"} strokeWidth={0.8} rx={4} />
                                                 <text x={cx + layout.rx + 35} y={cy + layout.ry + 10} textAnchor="middle" fontSize={9} fill="#374151">x: {ann.time.toFixed(timePrecision)}</text>
                                                 <text x={cx + layout.rx + 35} y={cy + layout.ry + 21} textAnchor="middle" fontSize={9} fill="#374151">y: {ann.value.toFixed(3)}</text>
                                               </g>
@@ -4767,7 +4971,8 @@ export function WaveformAnalyzer({ pointsCountFromTopology = 4, machineListFromT
                                 </LineChart>
                               </ResponsiveContainer>
                             </div>
-                          </div>
+                          </div>)
+
                         ) : singleWaveType === 'user-debug' ? (
                           !activePoint.calibration?.debugWaves ? (
                             <div className="flex flex-col items-center justify-center h-full text-gray-400 p-8 text-center">
@@ -4802,7 +5007,7 @@ export function WaveformAnalyzer({ pointsCountFromTopology = 4, machineListFromT
                                           tickFormatter={(val) => val.toFixed(3)} 
                                           tick={{fontSize: 9, fill: '#64748b'}}
                                         />
-                                        <YAxis width={25} stroke="#94a3b8" tick={{fontSize: 9, fill: '#64748b'}} domain={['auto', 'auto']} allowDataOverflow tickFormatter={(val) => val.toFixed(1)} />
+                                        <YAxis width={25} stroke="#94a3b8" tick={{fontSize: 9, fill: '#64748b'}} domain={getSubplotYDomain(cfg.key)} allowDataOverflow tickFormatter={(val) => val.toFixed(1)} />
                                         <Line 
                                           name={cfg.label} 
                                           type="linear" 
@@ -4858,6 +5063,33 @@ export function WaveformAnalyzer({ pointsCountFromTopology = 4, machineListFromT
                                               stroke="#fff"
                                               strokeWidth={1}
                                               isAnimationActive={false}
+                                            />
+                                          );
+                                        })}
+
+                                        {/* Annotations */}
+                                        {annotations.filter(ann => ann.curveKey === cfg.key || (cfg.key === 'original' && ann.curveKey === 'value')).map((ann) => {
+                                          const isSelected = selectedAnnotationId === ann.id;
+                                          const labelPos = ann.labelPosition || 'top-right';
+                                          const layout = getLabelLayout(labelPos, isSelected ? 5 : 4);
+                                          return (
+                                            <ReferenceDot
+                                              key={`ann-${ann.id}`}
+                                              x={ann.time}
+                                              y={ann.value}
+                                              shape={(props) => {
+                                                const { cx, cy } = props;
+                                                return (
+                                                  <g>
+                                                    <circle cx={cx} cy={cy} r={isSelected ? 5 : 4} fill={ann.color || "#3b82f6"} stroke={isSelected ? "#000" : "#fff"} strokeWidth={2} style={{ cursor: cursorMode === 'data' ? 'move' : 'default' }} />
+                                                    <g style={{ cursor: cursorMode === 'data' ? 'move' : 'default' }}>
+                                                      <rect x={cx + layout.rx} y={cy + layout.ry} width={layout.width} height={layout.height} fill="white" stroke={isSelected ? "#ef4444" : ann.color || "#3b82f6"} strokeWidth={0.8} rx={4} />
+                                                      <text x={cx + layout.rx + 35} y={cy + layout.ry + 10} textAnchor="middle" fontSize={9} fill="#374151">x: {ann.time.toFixed(6)}</text>
+                                                      <text x={cx + layout.rx + 35} y={cy + layout.ry + 21} textAnchor="middle" fontSize={9} fill="#374151">y: {ann.value.toFixed(3)}</text>
+                                                    </g>
+                                                  </g>
+                                                );
+                                              }}
                                             />
                                           );
                                         })}
@@ -4971,7 +5203,10 @@ export function WaveformAnalyzer({ pointsCountFromTopology = 4, machineListFromT
                               </div>
 
                               {/* Right Column: Interactive Algorithm Debugging Panel */}
-                              <div className="w-[380px] border-l border-gray-200 bg-slate-50 flex flex-col h-full overflow-hidden select-none">
+                              <div 
+                                className="w-[380px] border-l border-gray-200 bg-slate-50 flex flex-col h-full overflow-hidden select-none"
+                                onWheelCapture={(e) => e.stopPropagation()}
+                              >
                                 {/* Tab buttons */}
                                 <div className="flex border-b border-gray-200 bg-white px-2 pt-2">
                                   <button
@@ -5216,7 +5451,7 @@ export function WaveformAnalyzer({ pointsCountFromTopology = 4, machineListFromT
                             )}
                             
                             {/* Wave Head Shading Areas (replicates MATLAB fill) */}
-                            {singleWaveType === 'calibration' && activePoint?.calibration?.heads?.map((h, i) => {
+                            {singleWaveType === 'calibration' && detectionType !== 'initial' && activePoint?.calibration?.heads?.map((h, i) => {
                               const sIdx = h.startIdx !== undefined ? h.startIdx : Math.max(0, h.index - 8);
                               const sVal = getCalibrationY(activePoint, sIdx, 'calibration');
                               return (
@@ -5234,8 +5469,9 @@ export function WaveformAnalyzer({ pointsCountFromTopology = 4, machineListFromT
                             })}
                             
                             {!isCalibratingDrag && activePoint?.calibration?.heads?.map((h, i) => {
-                              const displayVal = getCalibrationY(activePoint, h.index, singleWaveType);
-                              const timeVal = h.index / samplingFreq;
+                              const displayIdx = h.index;
+                              const displayVal = getCalibrationY(activePoint, displayIdx, singleWaveType);
+                              const timeVal = displayIdx / samplingFreq;
                               const showLabel = manualCalibratingPointId === activePoint?.id;
                               const labelPos = h.labelPosition || 'top-right';
                               const layout = getLabelLayout(labelPos, 5);
@@ -5350,10 +5586,10 @@ export function WaveformAnalyzer({ pointsCountFromTopology = 4, machineListFromT
                             )}
                           </ComposedChart>
                         </ResponsiveContainer>
-                       )}
-                      </div>
-                    </Card>
-                  </div>
+                      )}
+                    </div>
+                  </Card>
+                </div>
 
                   {/* Vertical Resize Handle */}
                   <div 

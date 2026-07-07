@@ -405,7 +405,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
                     <input
                       type="number"
                       step="0.01"
-                      value={localSettings.faultDetection.para_cali_start_doorsill ?? 0.1}
+                      value={localSettings.faultDetection.para_cali_start_doorsill ?? 0.01}
                       onChange={(e) => setLocalSettings(prev => ({ ...prev, faultDetection: { ...prev.faultDetection, para_cali_start_doorsill: Number(e.target.value) } }))}
                       className="w-full h-8 px-2.5 text-sm border border-gray-300 rounded focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none transition-colors"
                     />
@@ -432,7 +432,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
                     <label className="text-xs font-medium text-gray-700">差分点距离上限</label>
                     <input
                       type="number"
-                      value={localSettings.faultDetection.user_diff2_time ?? 7}
+                      value={localSettings.faultDetection.user_diff2_time ?? 10}
                       onChange={(e) => setLocalSettings(prev => ({ ...prev, faultDetection: { ...prev.faultDetection, user_diff2_time: Number(e.target.value) } }))}
                       className="w-full h-8 px-2.5 text-sm border border-gray-300 rounded focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none transition-colors"
                     />
