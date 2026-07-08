@@ -47,6 +47,11 @@ export interface AppSettings {
     user_diff2_time: number;
     user_diff2_time_end: number;
     para_cali_head_count: number;
+    zoomThresholdX: number;
+    zoomThresholdY: number;
+    sequenceHeadStartColor: string;
+    sequenceHeadPeakColor: string;
+    sequenceHeadSize: number;
   };
   system: {
     dataImportFolder: string;
@@ -148,6 +153,11 @@ export const defaultSettings: AppSettings = {
     user_diff2_time: 10,
     user_diff2_time_end: 50,
     para_cali_head_count: 15,
+    zoomThresholdX: 10,
+    zoomThresholdY: 10,
+    sequenceHeadStartColor: '#ef4444',
+    sequenceHeadPeakColor: '#3b82f6',
+    sequenceHeadSize: 4,
   },
   system: {
     dataImportFolder: '',

@@ -514,6 +514,63 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
                       className="w-full h-8 px-2.5 text-sm border border-gray-300 rounded focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none transition-colors"
                     />
                   </div>
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-medium text-gray-700">横向缩放触发像素 (px)</label>
+                    <input
+                      type="number"
+                      value={localSettings.faultDetection.zoomThresholdX}
+                      onChange={(e) => setLocalSettings(prev => ({ ...prev, faultDetection: { ...prev.faultDetection, zoomThresholdX: Number(e.target.value) } }))}
+                      className="w-full h-8 px-2.5 text-sm border border-gray-300 rounded focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none transition-colors"
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-medium text-gray-700">纵向缩放触发像素 (px)</label>
+                    <input
+                      type="number"
+                      value={localSettings.faultDetection.zoomThresholdY}
+                      onChange={(e) => setLocalSettings(prev => ({ ...prev, faultDetection: { ...prev.faultDetection, zoomThresholdY: Number(e.target.value) } }))}
+                      className="w-full h-8 px-2.5 text-sm border border-gray-300 rounded focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none transition-colors"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <div className="pt-2 border-t border-gray-100">
+                <h4 className="text-sm font-medium text-gray-700 mb-3">波头序列标定数据点样式</h4>
+                <div className="grid grid-cols-3 gap-4">
+                  <div className="space-y-1.5 flex flex-col">
+                    <label className="text-xs font-medium text-gray-700">起始点颜色</label>
+                    <div className="flex gap-2 items-center mt-1">
+                      <input
+                        type="color"
+                        value={localSettings.faultDetection.sequenceHeadStartColor}
+                        onChange={(e) => setLocalSettings(prev => ({ ...prev, faultDetection: { ...prev.faultDetection, sequenceHeadStartColor: e.target.value } }))}
+                        className="w-8 h-8 rounded border border-gray-300 cursor-pointer"
+                      />
+                      <span className="text-xs text-gray-500 font-mono">{localSettings.faultDetection.sequenceHeadStartColor}</span>
+                    </div>
+                  </div>
+                  <div className="space-y-1.5 flex flex-col">
+                    <label className="text-xs font-medium text-gray-700">波峰点颜色</label>
+                    <div className="flex gap-2 items-center mt-1">
+                      <input
+                        type="color"
+                        value={localSettings.faultDetection.sequenceHeadPeakColor}
+                        onChange={(e) => setLocalSettings(prev => ({ ...prev, faultDetection: { ...prev.faultDetection, sequenceHeadPeakColor: e.target.value } }))}
+                        className="w-8 h-8 rounded border border-gray-300 cursor-pointer"
+                      />
+                      <span className="text-xs text-gray-500 font-mono">{localSettings.faultDetection.sequenceHeadPeakColor}</span>
+                    </div>
+                  </div>
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-medium text-gray-700">数据点大小 (px)</label>
+                    <input
+                      type="number"
+                      value={localSettings.faultDetection.sequenceHeadSize}
+                      onChange={(e) => setLocalSettings(prev => ({ ...prev, faultDetection: { ...prev.faultDetection, sequenceHeadSize: Number(e.target.value) } }))}
+                      className="w-full h-8 px-2.5 text-sm border border-gray-300 rounded focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none transition-colors"
+                    />
+                  </div>
                 </div>
               </div>
 
@@ -540,7 +597,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
                          key === 'phaseC' ? 'C相' : 
                          key === 'alpha' ? 'Alpha模' : 
                          key === 'beta' ? 'Beta模' : 
-                         key === 'teo' ? 'TEO算子' :
+                         key === 'teo' ? '差分信号' :
                          key === 'calibration' ? '标定曲线' : 'Zero模'}
                       </span>
                     </div>
