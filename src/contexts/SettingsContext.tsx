@@ -46,12 +46,17 @@ export interface AppSettings {
     para_cali_hist_sift: number;
     user_diff2_time: number;
     user_diff2_time_end: number;
+    min_pair_distance: number;
     para_cali_head_count: number;
     zoomThresholdX: number;
     zoomThresholdY: number;
     sequenceHeadStartColor: string;
     sequenceHeadPeakColor: string;
     sequenceHeadSize: number;
+    showSequenceGradient: boolean;
+    gradientStartColor: string;
+    gradientEndColor: string;
+    gradientFineness: number;
   };
   system: {
     dataImportFolder: string;
@@ -152,12 +157,17 @@ export const defaultSettings: AppSettings = {
     para_cali_hist_sift: 30,
     user_diff2_time: 10,
     user_diff2_time_end: 50,
+    min_pair_distance: 50,
     para_cali_head_count: 15,
     zoomThresholdX: 10,
     zoomThresholdY: 10,
     sequenceHeadStartColor: '#ef4444',
     sequenceHeadPeakColor: '#3b82f6',
     sequenceHeadSize: 4,
+    showSequenceGradient: true,
+    gradientStartColor: '#005387',
+    gradientEndColor: '#ffffff',
+    gradientFineness: 10,
   },
   system: {
     dataImportFolder: '',

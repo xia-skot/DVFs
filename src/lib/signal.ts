@@ -299,8 +299,8 @@ export function teagerEnergyOperator(data: number[] | Float32Array): Float32Arra
   return result;
 }
 
-export function multiDifference(data: number[] | Float32Array): { diff1: Float32Array, diff2: Float32Array } {
-  if (data.length < 3) return { diff1: new Float32Array(data.length), diff2: new Float32Array(data.length) };
+export function multiDifference(data: number[] | Float32Array): { diff1: Float32Array, diff2: Float32Array, diff3: Float32Array } {
+  if (data.length < 4) return { diff1: new Float32Array(data.length), diff2: new Float32Array(data.length), diff3: new Float32Array(data.length) };
   
   const diff1 = new Float32Array(data.length);
   for (let i = 0; i < data.length - 1; i++) {
@@ -312,7 +312,12 @@ export function multiDifference(data: number[] | Float32Array): { diff1: Float32
     diff2[i] = diff1[i + 1] - diff1[i];
   }
   
-  return { diff1, diff2 };
+  const diff3 = new Float32Array(data.length);
+  for (let i = 0; i < data.length - 3; i++) {
+    diff3[i] = diff2[i + 1] - diff2[i];
+  }
+  
+  return { diff1, diff2, diff3 };
 }
 
 /**
@@ -498,6 +503,7 @@ export interface SequenceCalibrationResult {
   startVal?: number;
   point1?: number;
   point2?: number;
+  diff1Idx?: number;
   debugWaves?: {
     diff1: Float32Array;
     diff2: Float32Array;
@@ -516,6 +522,7 @@ export interface CalibrationOptions {
   para_cali_hist_sift?: number;
   user_diff2_time?: number;
   user_diff2_time_end?: number;
+  min_pair_distance?: number;
   para_cali_head_count?: number;
 }
 
@@ -628,287 +635,252 @@ function getWaveHeadMatlab(
 function calibrateWaveSequenceCore(
   wave_fault1: number[] | Float32Array,
   options: CalibrationOptions = {}
-): {
-  waveHeads: SequenceCalibrationResult[];
-  T_head: number[];
-  extremaList: { index: number, val: number, absVal: number, passedThreshold: boolean, rank?: number, passedSift?: boolean }[];
-  pairingSteps: any[];
-} {
+): SequenceCalibrationOutput {
   const {
+    para_cali_start_doorsill = 0.1,
     para_cali_windows_length = 1000,
-    para_cali_start_doorsill = 0.01,
     para_cali_hist_sift = 30,
-    user_diff2_time = 10,
+    user_diff2_time = 7,  // corresponds to diff2_pole_time in MATLAB
     user_diff2_time_end = 50,
+    para_cali_head_count = 15
   } = options;
 
   const L = wave_fault1.length;
-  if (L < 10) {
-    return { waveHeads: [], T_head: [], extremaList: [], pairingSteps: [] };
-  }
+  if (L < 10) return { heads: [] };
 
-  // 1. Calculate diffs (matching MATLAB diff() exactly, left-aligned)
-  const diff1 = new Float32Array(L);
-  const diff2 = new Float32Array(L);
-  const diff3 = new Float32Array(L);
-
+  // 1. Calculate diff1, diff2, diff3
+  const diff1 = new Float32Array(L - 1);
   for (let i = 0; i < L - 1; i++) diff1[i] = wave_fault1[i + 1] - wave_fault1[i];
+  
+  const diff2 = new Float32Array(L - 2);
   for (let i = 0; i < L - 2; i++) diff2[i] = diff1[i + 1] - diff1[i];
+  
+  const diff3 = new Float32Array(L - 3);
   for (let i = 0; i < L - 3; i++) diff3[i] = diff2[i + 1] - diff2[i];
 
-  // Create mock time vector t_us (t_us is just indices 0 to L-1 since sampling frequency is 1MHz)
-  const t_us = new Float32Array(L);
-  for (let i = 0; i < L; i++) t_us[i] = i;
-
-  // 2. Call getWaveHeadMatlab
-  const para_cali = [para_cali_windows_length, para_cali_start_doorsill, 200, para_cali_hist_sift];
-  const { wave_head, t_head } = getWaveHeadMatlab(diff2, t_us, para_cali);
-
-  // Build extremaList for debugging (all sifted items are passed)
-  const extremaList: any[] = [];
-  for (let i = 0; i < L; i++) {
-    const isExtremum = t_head.includes(i);
-    if (isExtremum) {
-      extremaList.push({
-        index: i,
-        val: diff2[i],
-        absVal: Math.abs(diff2[i]),
-        passedThreshold: true,
-        passedSift: true
-      });
+  // 2. get_wave_head logic
+  let windows_start = 0;
+  for (let i = 0; i < diff2.length; i++) {
+    if (Math.abs(diff2[i]) > para_cali_start_doorsill) {
+      windows_start = Math.max(0, i - 10);
+      break;
     }
   }
+  let windows_end = Math.min(diff2.length - 1, windows_start + para_cali_windows_length);
+  const diff2_window = diff2.slice(windows_start, windows_end + 1);
+  
+  const p_site1 = getExtremPointMatlab(diff2_window);
+  const diff2_window_neg = new Float32Array(diff2_window.length);
+  for(let i=0; i<diff2_window.length; i++) diff2_window_neg[i] = -diff2_window[i];
+  const p_site2 = getExtremPointMatlab(diff2_window_neg);
+  
+  const P_pole: number[] = [];
+  const P_site: number[] = [];
+  for (const s of p_site1) {
+    P_pole.push(Math.abs(diff2_window[s]));
+    P_site.push(s);
+  }
+  for (const s of p_site2) {
+    P_pole.push(Math.abs(diff2_window[s]));
+    P_site.push(s);
+  }
+  
+  const pole_indices = P_pole.map((v, i) => i);
+  pole_indices.sort((a, b) => P_pole[b] - P_pole[a]);
+  
+  const head_sift_count = Math.min(para_cali_hist_sift, pole_indices.length);
+  const head_site_indices = pole_indices.slice(0, head_sift_count);
+  
+  const T_head_window_idx: number[] = [];
+  for (const idx of head_site_indices) {
+    T_head_window_idx.push(P_site[idx]);
+  }
+  T_head_window_idx.sort((a, b) => a - b);
+  const T_head: number[] = T_head_window_idx.map(s => s + windows_start);
 
-  // 3. Pairing and start/end refinement
-  const T_head = t_head; // sorted ascending by index
   const waveHeads: SequenceCalibrationResult[] = [];
-  const pairingSteps: any[] = [];
-
   let k1 = 0;
-  while (k1 < T_head.length - 1) {
+  while (true) {
+    if (k1 >= T_head.length) break;
+    
     const point_1 = T_head[k1];
-    const point_2 = T_head[k1 + 1];
-    const distance = point_2 - point_1;
-    const isNear = distance <= user_diff2_time;
-    const isPosToNeg = diff2[point_1] > 0 && diff2[point_2] < 0;
-    const isNegToPos = diff2[point_1] < 0 && diff2[point_2] > 0;
-    const isOppositeSign = isPosToNeg || isNegToPos;
-
-    if (!isNear) {
-      pairingSteps.push({
-        k1,
-        point1: point_1,
-        point2: point_2,
-        val1: diff2[point_1],
-        val2: diff2[point_2],
-        distance,
-        isNear,
-        isOppositeSign,
-        status: 'failed_distance',
-        description: `极值点 ${point_1} (值: ${diff2[point_1].toFixed(4)}) 与极值点 ${point_2} (值: ${diff2[point_2].toFixed(4)}) 的间隔为 ${distance} 点，大于最大允许间隔限制 user_diff2_time (${user_diff2_time} 点)。配对失败，k1 索引向后步进 1 点。`
-      });
-      k1 += 1;
+    let point_2: number;
+    
+    if (k1 + 1 < T_head.length && T_head[k1 + 1] - point_1 <= user_diff2_time) {
+      point_2 = T_head[k1 + 1];
+    } else {
+      k1++;
       continue;
     }
+    
+    let t_range1 = Math.max(0, point_1 - user_diff2_time);
+    let t_range2 = point_2;
+    
+    const val1 = diff2[point_1];
+    const val2 = diff2[point_2];
+    
+    let t_head_start = point_1;
+    let t_head_end = point_2;
+    let diff1Idx: number | undefined;
 
-    if (!isOppositeSign) {
-      pairingSteps.push({
-        k1,
-        point1: point_1,
-        point2: point_2,
-        val1: diff2[point_1],
-        val2: diff2[point_2],
-        distance,
-        isNear,
-        isOppositeSign,
-        status: 'failed_sign',
-        description: `极值点 ${point_1} (值: ${diff2[point_1].toFixed(4)}) 与极值点 ${point_2} (值: ${diff2[point_2].toFixed(4)}) 极性相同 (同为${diff2[point_1] > 0 ? '正' : '负'})，未发生二阶差分正负极性交替。配对失败，k1 索引向后步进 1 点。`
-      });
-      k1 += 1;
+    if (val1 > 0 && val2 < 0) { 
+      const search_end_for_zheng = Math.min(point_2 + user_diff2_time_end, diff2.length - 1);
+      let site_zheng_s_first = -1;
+      for (let i = point_2; i <= search_end_for_zheng; i++) {
+        if (diff2[i] > 0) { site_zheng_s_first = i; break; }
+      }
+      
+      if (site_zheng_s_first === -1) {
+        if (k1 + 2 < T_head.length) {
+          t_range2 = Math.min(point_2 + user_diff2_time_end, T_head[k1 + 2]);
+        } else {
+          t_range2 = point_2 + user_diff2_time_end;
+        }
+      } else {
+        if (k1 + 2 < T_head.length) {
+          t_range2 = Math.min(site_zheng_s_first, T_head[k1 + 2]);
+        } else {
+          t_range2 = site_zheng_s_first;
+        }
+      }
+      
+      let max_diff3 = -Infinity;
+      let max_site_diff3 = t_range1;
+      for (let i = t_range1; i <= Math.min(point_1, diff3.length - 1); i++) {
+        if (diff3[i] > max_diff3) { max_diff3 = diff3[i]; max_site_diff3 = i; }
+      }
+      t_head_start = max_site_diff3;
+      
+      let max_diff1 = -Infinity;
+      let max_site_diff1 = t_range1;
+      for (let i = t_range1; i <= Math.min(t_range2, diff1.length - 1); i++) {
+        if (diff1[i] > max_diff1) { max_diff1 = diff1[i]; max_site_diff1 = i; }
+      }
+      diff1Idx = max_site_diff1;
+      
+      let search_end_for_fu = Math.min(diff1Idx + user_diff2_time_end, diff1.length - 1);
+      if (k1 + 2 < T_head.length) search_end_for_fu = Math.min(search_end_for_fu, T_head[k1 + 2]);
+      
+      let site_fu_s_first = -1;
+      for (let i = diff1Idx; i <= search_end_for_fu; i++) {
+        if (diff1[i] <= 0) { site_fu_s_first = i; break; }
+      }
+      
+      if (site_fu_s_first === -1) {
+        let diff2_zheng_site_first = -1;
+        for (let i = diff1Idx || 0; i <= Math.min((diff1Idx || 0) + user_diff2_time_end, diff2.length - 1); i++) {
+          if (diff2[i] >= 0) { diff2_zheng_site_first = i; break; }
+        }
+        if (diff2_zheng_site_first === -1) {
+          t_head_end = (diff1Idx || 0) + user_diff2_time_end;
+        } else {
+          t_head_end = diff2_zheng_site_first;
+        }
+      } else {
+        t_head_end = site_fu_s_first;
+      }
+      
+    } else if (val1 < 0 && val2 > 0) { 
+      const search_end_for_fu = Math.min(point_2 + user_diff2_time_end, diff2.length - 1);
+      let site_fu_s_first = -1;
+      for (let i = point_2; i <= search_end_for_fu; i++) {
+        if (diff2[i] < 0) { site_fu_s_first = i; break; }
+      }
+      
+      if (site_fu_s_first === -1) {
+        if (k1 + 2 < T_head.length) {
+          t_range2 = Math.min(point_2 + user_diff2_time_end, T_head[k1 + 2]);
+        } else {
+          t_range2 = point_2 + user_diff2_time_end;
+        }
+      } else {
+        if (k1 + 2 < T_head.length) {
+          t_range2 = Math.min(site_fu_s_first, T_head[k1 + 2]);
+        } else {
+          t_range2 = site_fu_s_first;
+        }
+      }
+      
+      let min_diff3 = Infinity;
+      let min_site_diff3 = t_range1;
+      for (let i = t_range1; i <= Math.min(point_1, diff3.length - 1); i++) {
+        if (diff3[i] < min_diff3) { min_diff3 = diff3[i]; min_site_diff3 = i; }
+      }
+      t_head_start = min_site_diff3;
+      
+      let min_diff1 = Infinity;
+      let min_site_diff1 = t_range1;
+      for (let i = t_range1; i <= Math.min(t_range2, diff1.length - 1); i++) {
+        if (diff1[i] < min_diff1) { min_diff1 = diff1[i]; min_site_diff1 = i; }
+      }
+      diff1Idx = min_site_diff1;
+      
+      let search_end_for_zheng = Math.min(diff1Idx + user_diff2_time_end, diff1.length - 1);
+      if (k1 + 2 < T_head.length) search_end_for_zheng = Math.min(search_end_for_zheng, T_head[k1 + 2]);
+      
+      let site_zheng_s_first = -1;
+      for (let i = diff1Idx || 0; i <= search_end_for_zheng; i++) {
+        if (diff1[i] >= 0) { site_zheng_s_first = i; break; }
+      }
+      
+      if (site_zheng_s_first === -1) {
+        let diff2_fu_site_first = -1;
+        for (let i = diff1Idx || 0; i <= Math.min((diff1Idx || 0) + user_diff2_time_end, diff2.length - 1); i++) {
+          if (diff2[i] <= 0) { diff2_fu_site_first = i; break; }
+        }
+        if (diff2_fu_site_first === -1) {
+          t_head_end = (diff1Idx || 0) + user_diff2_time_end;
+        } else {
+          t_head_end = diff2_fu_site_first;
+        }
+      } else {
+        t_head_end = site_zheng_s_first;
+      }
+    } else {
+      k1++;
       continue;
     }
-
-    // Proximity & Sign Changed!
-    const t_range1 = Math.max(0, point_1 - user_diff2_time);
-    let t_range2 = point_2 + user_diff2_time_end;
-    const next_head = (k1 + 2 < T_head.length) ? T_head[k1 + 2] : L - 1;
-
-    if (isPosToNeg) {
-      // Positive to Negative: Positive wave head
-      let zheng_site_idx = -1;
-      for (let i = point_2; i < Math.min(point_2 + user_diff2_time_end, L - 2); i++) {
-        if (diff2[i] > 0) {
-          zheng_site_idx = i;
-          break;
-        }
-      }
-      if (zheng_site_idx !== -1) {
-        t_range2 = Math.min(zheng_site_idx, next_head);
-      } else {
-        t_range2 = Math.min(point_2 + user_diff2_time_end, next_head);
-      }
-    } else {
-      // Negative to Positive: Negative wave head
-      let fu_site_idx = -1;
-      for (let i = point_2; i < Math.min(point_2 + user_diff2_time_end, L - 2); i++) {
-        if (diff2[i] < 0) {
-          fu_site_idx = i;
-          break;
-        }
-      }
-      if (fu_site_idx !== -1) {
-        t_range2 = Math.min(fu_site_idx, next_head);
-      } else {
-        t_range2 = Math.min(point_2 + user_diff2_time_end, next_head);
-      }
-    }
-
-    let t_head_start = -1;
-    let t_head_end = -1;
-
-    if (isPosToNeg) {
-      // Find maximum of diff3 in [t_range1, point_1]
-      let max_v = -Infinity;
-      for (let i = Math.max(0, t_range1); i <= point_1; i++) {
-        if (diff3[i] > max_v) {
-          max_v = diff3[i];
-          t_head_start = i;
-        }
-      }
-
-      // Find maximum of diff1 in [t_range1, t_range2]
-      let max_d1 = -Infinity;
-      let t_diff1_max = -1;
-      for (let i = Math.max(0, t_range1); i <= Math.min(t_range2, L - 2); i++) {
-        if (diff1[i] > max_d1) {
-          max_d1 = diff1[i];
-          t_diff1_max = i;
-        }
-      }
-
-      if (t_diff1_max !== -1) {
-        let zero_crossing = -1;
-        const searchEnd = Math.min(t_diff1_max + user_diff2_time_end, next_head, L - 2);
-        for (let i = t_diff1_max; i <= searchEnd; i++) {
-          if (diff1[i] <= 0) {
-            zero_crossing = i;
-            break;
-          }
-        }
-
-        if (zero_crossing === -1) {
-          let d2_zheng = -1;
-          for (let i = t_diff1_max; i < Math.min(t_diff1_max + user_diff2_time_end, L - 2); i++) {
-            if (diff2[i] >= 0) {
-              d2_zheng = i;
-              break;
-            }
-          }
-          t_head_end = d2_zheng !== -1 ? d2_zheng : Math.min(t_diff1_max + user_diff2_time_end, L - 1);
-        } else {
-          t_head_end = zero_crossing;
-        }
-      }
-    } else {
-      // Find minimum of diff3 in [t_range1, point_1]
-      let min_v = Infinity;
-      for (let i = Math.max(0, t_range1); i <= point_1; i++) {
-        if (diff3[i] < min_v) {
-          min_v = diff3[i];
-          t_head_start = i;
-        }
-      }
-
-      // Find minimum of diff1 in [t_range1, t_range2]
-      let min_d1 = Infinity;
-      let t_diff1_min = -1;
-      for (let i = Math.max(0, t_range1); i <= Math.min(t_range2, L - 2); i++) {
-        if (diff1[i] < min_d1) {
-          min_d1 = diff1[i];
-          t_diff1_min = i;
-        }
-      }
-
-      if (t_diff1_min !== -1) {
-        let zero_crossing = -1;
-        const searchEnd = Math.min(t_diff1_min + user_diff2_time_end, next_head, L - 2);
-        for (let i = t_diff1_min; i <= searchEnd; i++) {
-          if (diff1[i] >= 0) {
-            zero_crossing = i;
-            break;
-          }
-        }
-
-        if (zero_crossing === -1) {
-          let d2_fu = -1;
-          for (let i = t_diff1_min; i < Math.min(t_diff1_min + user_diff2_time_end, L - 2); i++) {
-            if (diff2[i] <= 0) {
-              d2_fu = i;
-              break;
-            }
-          }
-          t_head_end = d2_fu !== -1 ? d2_fu : Math.min(t_diff1_min + user_diff2_time_end, L - 1);
-        } else {
-          t_head_end = zero_crossing;
-        }
-      }
-    }
-
-    if (t_head_start !== -1 && t_head_end !== -1) {
-      const amp = wave_fault1[t_head_end] - wave_fault1[t_head_start];
-      waveHeads.push({
-        index: t_head_end,
-        value: wave_fault1[t_head_end],
-        amplitude: amp,
-        startIdx: t_head_start,
-        endIdx: t_head_end,
-        startVal: wave_fault1[t_head_start],
-        isManual: false,
-        point1: point_1,
-        point2: point_2
-      });
-
-      pairingSteps.push({
-        k1,
-        point1: point_1,
-        point2: point_2,
-        val1: diff2[point_1],
-        val2: diff2[point_2],
-        distance,
-        isNear,
-        isOppositeSign,
-        status: 'success',
-        description: `极值点 ${point_1} 与极值点 ${point_2} 配对成功：二阶差分极性交替（${isPosToNeg ? '正→负' : '负→正'}），极性转折间隔 ${distance} 点。标定波头起点于三阶极值第 ${t_head_start} 点，标定波头终点于一阶过零第 ${t_head_end} 点，波头跃变幅值差为 ${amp.toFixed(4)}。配对成功，k1 索引向后步进 2 点。`,
-        t_head_start,
-        t_head_end,
-        amplitude: amp
-      });
-    } else {
-      pairingSteps.push({
-        k1,
-        point1: point_1,
-        point2: point_2,
-        val1: diff2[point_1],
-        val2: diff2[point_2],
-        distance,
-        isNear,
-        isOppositeSign,
-        status: 'skipped',
-        description: `极值点 ${point_1} 与极值点 ${point_2} 间隔和极性满足配对，但在起点/终点子波提取阶段定位异常。配对放弃，k1 索引向后步进 2 点。`
-      });
-    }
+    
+    t_head_start = Math.max(0, Math.min(L - 1, t_head_start));
+    t_head_end = Math.max(0, Math.min(L - 1, t_head_end));
+    
+    const wave_head_start = wave_fault1[t_head_start];
+    const wave_head_end = wave_fault1[t_head_end];
+    const wave_amplitude = wave_head_end - wave_head_start;
+    
+    waveHeads.push({
+      index: t_head_start, // Start time of wave head
+      value: wave_head_start, // Original waveform value at start time
+      amplitude: wave_amplitude,
+      isManual: false,
+      startIdx: t_head_start,
+      endIdx: t_head_end,
+      startVal: wave_head_start,
+      point1: point_1,
+      point2: point_2,
+      diff1Idx
+    });
+    
     k1 += 2;
   }
 
-  return { waveHeads, T_head, extremaList, pairingSteps };
+  return { 
+    heads: waveHeads,
+    debugInfo: {
+      threshold: para_cali_start_doorsill,
+      T_head,
+      validHeads: waveHeads
+    }
+  };
 }
 
 export function calibrateWaveSequence(
   wave_fault1: number[] | Float32Array,
   options: CalibrationOptions = {}
 ): SequenceCalibrationResult[] {
-  const { waveHeads } = calibrateWaveSequenceCore(wave_fault1, options);
+  const { heads } = calibrateWaveSequenceCore(wave_fault1, options);
   const { para_cali_head_count = 15 } = options;
+  const waveHeads = [...heads];
   waveHeads.sort((a, b) => Math.abs(b.amplitude) - Math.abs(a.amplitude));
   const finalHeads = waveHeads.slice(0, para_cali_head_count);
   finalHeads.sort((a, b) => a.index - b.index);
@@ -917,12 +889,6 @@ export function calibrateWaveSequence(
 
 export interface SequenceCalibrationOutput {
   heads: SequenceCalibrationResult[];
-  debugWaves: {
-    diff1: Float32Array;
-    diff2: Float32Array;
-    diff3: Float32Array;
-    original: Float32Array;
-  };
   debugInfo?: {
     threshold: number;
     T_head?: number[];
@@ -951,6 +917,7 @@ export interface SequenceCalibrationOutput {
       t_head_end?: number;
       amplitude?: number;
     }[];
+    validHeads?: SequenceCalibrationResult[];
   };
 }
 
@@ -958,48 +925,7 @@ export function calibrateWaveSequenceUserUpload(
   wave_fault1: number[] | Float32Array,
   options: CalibrationOptions = {}
 ): SequenceCalibrationOutput {
-  const L = wave_fault1.length;
-  if (L < 10) {
-    return {
-      heads: [],
-      debugWaves: {
-        diff1: new Float32Array(0),
-        diff2: new Float32Array(0),
-        diff3: new Float32Array(0),
-        original: wave_fault1 instanceof Float32Array ? wave_fault1 : new Float32Array(wave_fault1)
-      }
-    };
-  }
-
-  const { waveHeads, T_head, extremaList, pairingSteps } = calibrateWaveSequenceCore(wave_fault1, options);
-
-  const diff1 = new Float32Array(L);
-  const diff2 = new Float32Array(L);
-  const diff3 = new Float32Array(L);
-
-  for (let i = 0; i < L - 1; i++) diff1[i] = wave_fault1[i + 1] - wave_fault1[i];
-  for (let i = 0; i < L - 2; i++) diff2[i] = diff1[i + 1] - diff1[i];
-  for (let i = 0; i < L - 3; i++) diff3[i] = diff2[i + 1] - diff2[i];
-
-  const debugWaves = {
-    diff1,
-    diff2,
-    diff3,
-    original: wave_fault1 instanceof Float32Array ? wave_fault1 : new Float32Array(wave_fault1)
-  };
-
-  const { para_cali_start_doorsill = 0.01, para_cali_head_count = 15 } = options;
-
-  return {
-    heads: waveHeads.slice(0, para_cali_head_count),
-    debugWaves,
-    debugInfo: {
-      threshold: para_cali_start_doorsill,
-      T_head,
-      extrema: extremaList,
-      pairingSteps
-    }
-  };
+  return calibrateWaveSequenceCore(wave_fault1, options);
 }
 
 export function generateMockConditionData(pointsCount: number, faultPointIdx: number = 0) {

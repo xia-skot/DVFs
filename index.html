@@ -4,10 +4,29 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>My Google AI Studio App</title>
+    <script>
+      // Prevent DataCloneError: Failed to execute 'measure' on 'Performance': Data cannot be cloned, out of memory.
+      // This happens in React 18+ development mode when it tries to send large fiber props (like Recharts data) to the Performance API.
+      const originalMeasure = performance.measure;
+      performance.measure = function (...args) {
+        try {
+          if (args[1] && typeof args[1] === 'object' && 'detail' in args[1]) {
+            const { detail, ...rest } = args[1];
+            return originalMeasure.call(this, args[0], rest);
+          }
+          return originalMeasure.apply(this, args);
+        } catch (err) {
+          if (err instanceof Error && err.name === 'DataCloneError') {
+            console.warn('Ignored DataCloneError in performance.measure');
+            return;
+          }
+          throw err;
+        }
+      };
+    </script>
   </head>
   <body>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
-
