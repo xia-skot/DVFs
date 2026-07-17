@@ -235,24 +235,29 @@ export function getWindowOptions(detType: string): { label: string, value: Windo
 }
 
 function interpolateColor(color1: string, color2: string, factor: number) {
-  const c1 = color1.startsWith('#') ? color1.slice(1) : color1;
-  const c2 = color2.startsWith('#') ? color2.slice(1) : color2;
-  
-  let r1 = parseInt(c1.substring(0, 2), 16);
-  let g1 = parseInt(c1.substring(2, 4), 16);
-  let b1 = parseInt(c1.substring(4, 6), 16);
-  
-  let r2 = parseInt(c2.substring(0, 2), 16);
-  let g2 = parseInt(c2.substring(2, 4), 16);
-  let b2 = parseInt(c2.substring(4, 6), 16);
-  
-  if (isNaN(r1)) { r1 = 0; g1 = 83; b1 = 135; }
-  if (isNaN(r2)) { r2 = 255; g2 = 255; b2 = 255; }
-  
+  const parseHex = (hex: string) => {
+    const cleanHex = hex.startsWith('#') ? hex.slice(1) : hex;
+    if (cleanHex.length === 3) {
+      return [
+        parseInt(cleanHex[0] + cleanHex[0], 16),
+        parseInt(cleanHex[1] + cleanHex[1], 16),
+        parseInt(cleanHex[2] + cleanHex[2], 16)
+      ];
+    }
+    return [
+      parseInt(cleanHex.substring(0, 2), 16) || 0,
+      parseInt(cleanHex.substring(2, 4), 16) || 0,
+      parseInt(cleanHex.substring(4, 6), 16) || 0
+    ];
+  };
+
+  const [r1, g1, b1] = parseHex(color1 || '#005387');
+  const [r2, g2, b2] = parseHex(color2 || '#ffffff');
+
   const r = Math.round(r1 + factor * (r2 - r1));
   const g = Math.round(g1 + factor * (g2 - g1));
   const b = Math.round(b1 + factor * (b2 - b1));
-  
+
   return `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`;
 }
 
@@ -298,6 +303,16 @@ export function WaveformAnalyzer({ pointsCountFromTopology = 4, machineListFromT
   const [isImporting, setIsImporting] = useState<boolean>(false);
   const [activeConditionIdx, setActiveConditionIdx] = useState<number>(0);
   const [activePointId, setActivePointId] = useState<string | null>(null);
+  const [markersVisible, setMarkersVisible] = useState(false);
+
+  // Delay markers visibility when switching points to let curve draw first
+  useEffect(() => {
+    setMarkersVisible(false);
+    const timer = setTimeout(() => {
+      setMarkersVisible(true);
+    }, 800); // Wait 800ms for curve to draw
+    return () => clearTimeout(timer);
+  }, [activePointId, activeConditionIdx]);
   const [debugActiveTab, setDebugActiveTab] = useState<'pairing' | 'extrema'>('pairing');
   const [hoveredDebugIndex, setHoveredDebugIndex] = useState<number | null>(null);
   const [selectedDebugStep, setSelectedDebugStep] = useState<number | null>(null);
@@ -4242,15 +4257,15 @@ export function WaveformAnalyzer({ pointsCountFromTopology = 4, machineListFromT
                                                 !winHiddenLines.includes('diffSignal') && <Line type="monotone" dataKey="diffSignal" stroke={settings.faultDetection.curveColors.teo} strokeWidth={1.5} dot={false} isAnimationActive={false} />
                                               ) : (
                                                 <>
-                                                  {!winHiddenLines.includes('diff1') && <Line type="monotone" dataKey="diff1" stroke="#f97316" strokeWidth={1.5} dot={false} isAnimationActive={false} />}
-                                                  {!winHiddenLines.includes('diff2') && <Line type="monotone" dataKey="diff2" stroke="#ef4444" strokeWidth={1.5} dot={false} isAnimationActive={false} />}
+                                                  {!winHiddenLines.includes('diff1') && <Line type="monotone" dataKey="diff1" stroke="#f97316" strokeWidth={1.5} dot={false} isAnimationActive={chartAnimationMode !== "none"} animationDuration={800} />}
+                                                  {!winHiddenLines.includes('diff2') && <Line type="monotone" dataKey="diff2" stroke="#ef4444" strokeWidth={1.5} dot={false} isAnimationActive={chartAnimationMode !== "none"} animationDuration={800} />}
                                                 </>
                                               )}
                                            </>
                                         )}
                                         {win.type === 'user-debug' && (
                                            <>
-                                              {!winHiddenLines.includes('original') && <Line type="monotone" dataKey="original" stroke="#3b82f6" strokeWidth={1} dot={false} isAnimationActive={false} />}
+                                              {!winHiddenLines.includes('original') && <Line type="monotone" dataKey="original" stroke="#3b82f6" strokeWidth={1} dot={false} isAnimationActive={chartAnimationMode !== "none"} animationDuration={800} />}
                                               {!winHiddenLines.includes('diff1') && <Line type="monotone" dataKey="diff1" stroke="#f97316" strokeWidth={1} dot={false} isAnimationActive={false} />}
                                               {!winHiddenLines.includes('diff2') && <Line type="monotone" dataKey="diff2" stroke="#ef4444" strokeWidth={1} dot={false} isAnimationActive={false} />}
                                               {!winHiddenLines.includes('diff3') && <Line type="monotone" dataKey="diff3" stroke="#8b5cf6" strokeWidth={1} dot={false} isAnimationActive={false} />}
@@ -4258,8 +4273,8 @@ export function WaveformAnalyzer({ pointsCountFromTopology = 4, machineListFromT
                                         )}
                                         {win.type === 'calibration' && (
                                            <>
-                                              <Line type="monotone" dataKey="value" stroke={getCalibrationLineColor(settings.faultDetection.curveColors)} strokeWidth={1.5} dot={false} isAnimationActive={false} />
-                                              {point.calibration?.heads.map((h, i) => {
+                                              <Line type="monotone" dataKey="value" stroke={getCalibrationLineColor(settings.faultDetection.curveColors)} strokeWidth={1.5} dot={false} isAnimationActive={chartAnimationMode !== 'none'} animationDuration={800} />
+                                              {(detectionType === 'initial' || settings.faultDetection.showSequenceDots !== false) && markersVisible && point.calibration?.heads.map((h, i) => {
                                                  const peakIdx = Math.round((h as any).peakIdx !== undefined ? (h as any).peakIdx : h.index);
                                                  const originalVal = getCalibrationY(point, peakIdx, 'calibration');
                                                  const dotSize = settings.faultDetection.sequenceHeadSize || 4;
@@ -4293,7 +4308,7 @@ export function WaveformAnalyzer({ pointsCountFromTopology = 4, machineListFromT
                                            </>
                                         )}
                                         {(win.type === 'noise' || win.type === 'denoise') && !winHiddenLines.includes('value') && (
-                                           <Line type="monotone" dataKey="value" stroke="#6366f1" strokeWidth={1.5} dot={false} isAnimationActive={false} />
+                                           <Line type="monotone" dataKey="value" stroke="#6366f1" strokeWidth={1.5} dot={false} isAnimationActive={chartAnimationMode !== "none"} animationDuration={800} />
                                         )}
                                         {win.type === 'pso-compare' && (
                                            <>
@@ -4689,7 +4704,7 @@ export function WaveformAnalyzer({ pointsCountFromTopology = 4, machineListFromT
                                   )}
 
                                   {/* Wave Head markers (Red Dots) */}
-                                  {!isCalibratingDrag && activePoint?.calibration?.heads?.map((h, i) => {
+                                  {!isCalibratingDrag && markersVisible && activePoint?.calibration?.heads?.map((h, i) => {
                                     const displayIdx = h.index;
                                     const displayVal = getCalibrationY(activePoint, displayIdx, 'differential', 'diffSignal');
                                     const timeVal = displayIdx / samplingFreq;
@@ -4839,11 +4854,11 @@ export function WaveformAnalyzer({ pointsCountFromTopology = 4, machineListFromT
                                       <YAxis width={25} stroke="#94a3b8" tick={{fontSize: 9, fill: '#64748b'}} domain={getSubplotYDomain(cfg.key)} allowDataOverflow tickFormatter={(val) => Math.round(val).toString()} />
 
                                       {!analysisHiddenLines.includes(cfg.key) && (
-                                        <Line key={`${cfg.key}-${animationKey}`} name={cfg.label} type="linear" dataKey={cfg.key} stroke={cfg.color} strokeWidth={1.5} dot={false} activeDot={false} isAnimationActive={false} />
+                                        <Line key={`${cfg.key}-${animationKey}`} name={cfg.label} type="linear" dataKey={cfg.key} stroke={cfg.color} strokeWidth={1.5} dot={false} activeDot={false} isAnimationActive={chartAnimationMode !== "none"} animationDuration={800} />
                                       )}
 
                                       {/* Vertical Reference Lines */}
-                                      {activePoint?.calibration?.heads?.map((h: any, i: number) => {
+                                      {markersVisible && activePoint?.calibration?.heads?.map((h: any, i: number) => {
                                         const displayIdx = h.index;
                                         const xVal = displayIdx / samplingFreq;
                                         return (
@@ -4859,7 +4874,7 @@ export function WaveformAnalyzer({ pointsCountFromTopology = 4, machineListFromT
                                       })}
 
                                       {/* Wave Head markers */}
-                                      {activePoint?.calibration?.heads?.map((h: any, i: number) => {
+                                      {markersVisible && activePoint?.calibration?.heads?.map((h: any, i: number) => {
                                         const startColor = settings.faultDetection.sequenceHeadStartColor;
                                         const peakColor = settings.faultDetection.sequenceHeadPeakColor;
                                         const dotSize = settings.faultDetection.sequenceHeadSize;
@@ -5107,7 +5122,7 @@ export function WaveformAnalyzer({ pointsCountFromTopology = 4, machineListFromT
                                         )}
 
                                         {/* Calibrated Result Markers - shown in original waveform subplot */}
-                                        {cfg.key === 'original' && activePoint?.calibration?.heads?.map((h: any, i: number) => {
+                                       {cfg.key === 'original' && markersVisible && activePoint?.calibration?.heads?.map((h: any, i: number) => {
                                           const xEnd = h.index / samplingFreq;
                                           const xStart = h.startIdx / samplingFreq;
                                           const yEnd = h.value;
@@ -5361,7 +5376,7 @@ export function WaveformAnalyzer({ pointsCountFromTopology = 4, machineListFromT
                             onMouseDown={handleChartMouseDown}
                           >
                             <defs>
-                              {singleWaveType === 'calibration' && detectionType !== 'initial' && settings.faultDetection.showSequenceGradient && activePoint?.calibration?.heads && activePoint.calibration.heads.map((h: any, i: number) => {
+                              {singleWaveType === 'calibration' && detectionType !== 'initial' && settings.faultDetection.showSequenceGradient && markersVisible && activePoint?.calibration?.heads && activePoint.calibration.heads.map((h: any, i: number) => {
                                 const fineness = settings.faultDetection.gradientFineness || 10;
                                 const sIdx = h.startIdx !== undefined ? h.startIdx : Math.max(0, h.index - 8);
                                 const eIdx = h.endIdx !== undefined ? h.endIdx : h.index;
@@ -5376,7 +5391,6 @@ export function WaveformAnalyzer({ pointsCountFromTopology = 4, machineListFromT
                                 for (let stepIdx = 0; stepIdx < totalSteps; stepIdx++) {
                                   const factor = stepIdx / (totalSteps - 1 || 1);
                                   const color = interpolateColor(startCol, endCol, factor);
-                                  const opacity = 0.9 - factor * 0.8;
                                   const startOffset = `${((stepIdx / totalSteps) * 100).toFixed(1)}%`;
                                   const endOffset = `${(((stepIdx + 1) / totalSteps) * 100).toFixed(1)}%`;
                                   
@@ -5385,13 +5399,13 @@ export function WaveformAnalyzer({ pointsCountFromTopology = 4, machineListFromT
                                       key={`${stepIdx}-start`} 
                                       offset={startOffset} 
                                       stopColor={color} 
-                                      stopOpacity={opacity} 
+                                      stopOpacity={1}
                                     />,
                                     <stop 
                                       key={`${stepIdx}-end`} 
                                       offset={endOffset} 
                                       stopColor={color} 
-                                      stopOpacity={opacity} 
+                                      stopOpacity={1}
                                     />
                                   );
                                 }
@@ -5425,26 +5439,26 @@ export function WaveformAnalyzer({ pointsCountFromTopology = 4, machineListFromT
                             {singleWaveType === 'original' && (
                               <>
                                 {!analysisHiddenLines.includes('A') && (
-                                  <Line key={`A-${animationKey}`} name="A相" type="monotone" dataKey="A" stroke={settings.faultDetection.curveColors.phaseA} strokeWidth={1.5} dot={false} activeDot={false} isAnimationActive={chartAnimationMode !== 'none'} animationDuration={chartAnimationMode === 'draw' ? 1000 : 500} />
+                                  <Line key={`A-${animationKey}`} name="A相" type="monotone" dataKey="A" stroke={settings.faultDetection.curveColors.phaseA} strokeWidth={1.5} dot={false} activeDot={false} isAnimationActive={chartAnimationMode !== 'none'} animationDuration={800} />
                                 )}
                                 {!analysisHiddenLines.includes('B') && (
-                                  <Line key={`B-${animationKey}`} name="B相" type="monotone" dataKey="B" stroke={settings.faultDetection.curveColors.phaseB} strokeWidth={1.5} dot={false} activeDot={false} isAnimationActive={chartAnimationMode !== 'none'} animationDuration={chartAnimationMode === 'draw' ? 1000 : 500} />
+                                  <Line key={`B-${animationKey}`} name="B相" type="monotone" dataKey="B" stroke={settings.faultDetection.curveColors.phaseB} strokeWidth={1.5} dot={false} activeDot={false} isAnimationActive={chartAnimationMode !== 'none'} animationDuration={800} />
                                 )}
                                 {!analysisHiddenLines.includes('C') && (
-                                  <Line key={`C-${animationKey}`} name="C相" type="monotone" dataKey="C" stroke={settings.faultDetection.curveColors.phaseC} strokeWidth={1.5} dot={false} activeDot={false} isAnimationActive={chartAnimationMode !== 'none'} animationDuration={chartAnimationMode === 'draw' ? 1000 : 500} />
+                                  <Line key={`C-${animationKey}`} name="C相" type="monotone" dataKey="C" stroke={settings.faultDetection.curveColors.phaseC} strokeWidth={1.5} dot={false} activeDot={false} isAnimationActive={chartAnimationMode !== 'none'} animationDuration={800} />
                                 )}
                               </>
                             )}
                             {singleWaveType === 'karenbauer' && (
                               <>
                                 {!analysisHiddenLines.includes('alpha') && (
-                                  <Line key={`alpha-${animationKey}`} name="α模" type="monotone" dataKey="alpha" stroke={settings.faultDetection.curveColors.alpha} strokeWidth={1.5} dot={false} activeDot={false} isAnimationActive={chartAnimationMode !== 'none'} animationDuration={chartAnimationMode === 'draw' ? 1000 : 500} />
+                                  <Line key={`alpha-${animationKey}`} name="α模" type="monotone" dataKey="alpha" stroke={settings.faultDetection.curveColors.alpha} strokeWidth={1.5} dot={false} activeDot={false} isAnimationActive={chartAnimationMode !== 'none'} animationDuration={800} />
                                 )}
                                 {!analysisHiddenLines.includes('beta') && (
-                                  <Line key={`beta-${animationKey}`} name="β模" type="monotone" dataKey="beta" stroke={settings.faultDetection.curveColors.beta} strokeWidth={1.5} dot={false} activeDot={false} isAnimationActive={chartAnimationMode !== 'none'} animationDuration={chartAnimationMode === 'draw' ? 1000 : 500} />
+                                  <Line key={`beta-${animationKey}`} name="β模" type="monotone" dataKey="beta" stroke={settings.faultDetection.curveColors.beta} strokeWidth={1.5} dot={false} activeDot={false} isAnimationActive={chartAnimationMode !== 'none'} animationDuration={800} />
                                 )}
                                 {!analysisHiddenLines.includes('zero') && (
-                                  <Line key={`zero-${animationKey}`} name="0模" type="monotone" dataKey="zero" stroke={settings.faultDetection.curveColors.zero} strokeWidth={1.5} dot={false} activeDot={false} isAnimationActive={chartAnimationMode !== 'none'} animationDuration={chartAnimationMode === 'draw' ? 1000 : 500} />
+                                  <Line key={`zero-${animationKey}`} name="0模" type="monotone" dataKey="zero" stroke={settings.faultDetection.curveColors.zero} strokeWidth={1.5} dot={false} activeDot={false} isAnimationActive={chartAnimationMode !== 'none'} animationDuration={800} />
                                 )}
                               </>
                             )}
@@ -5459,12 +5473,12 @@ export function WaveformAnalyzer({ pointsCountFromTopology = 4, machineListFromT
                                 dot={false} 
                                 activeDot={false}
                                 isAnimationActive={chartAnimationMode !== 'none'}
-                                animationDuration={chartAnimationMode === 'draw' ? 1000 : 500}
+                                animationDuration={800}
                               />
                             )}
                             
                             {/* Wave Head Shading Areas (Separate Area for each head) */}
-                            {singleWaveType === 'calibration' && detectionType !== 'initial' && settings.faultDetection.showSequenceGradient && activePoint?.calibration?.heads && activePoint.calibration.heads.map((h: any, i: number) => {
+                            {singleWaveType === 'calibration' && detectionType !== 'initial' && settings.faultDetection.showSequenceGradient && markersVisible && activePoint?.calibration?.heads && activePoint.calibration.heads.map((h: any, i: number) => {
                               const fineness = settings.faultDetection.gradientFineness || 10;
                               const sIdx = h.startIdx !== undefined ? h.startIdx : Math.max(0, h.index - 8);
                               const eIdx = h.endIdx !== undefined ? h.endIdx : h.index;
@@ -5481,19 +5495,33 @@ export function WaveformAnalyzer({ pointsCountFromTopology = 4, machineListFromT
                                   dataKey={`caliShadingRange_${i}`}
                                   stroke="none"
                                   fill={`url(#${gradId})`}
-                                  isAnimationActive={false}
+                                  fillOpacity={1}
+                                  isAnimationActive={chartAnimationMode !== 'none'}
+                                  animationBegin={0}
+                                  animationDuration={1000}
                                   activeDot={false}
                                   connectNulls={false}
                                 />
                               );
                             })}
                             
-                            {!isCalibratingDrag && activePoint?.calibration?.heads?.map((h, i) => {
+                            {!isCalibratingDrag && markersVisible && activePoint?.calibration?.heads?.map((h, i) => {
                               const showLabel = manualCalibratingPointId === activePoint?.id;
                               const labelPos = h.labelPosition || 'top-right';
                               const layout = getLabelLayout(labelPos, 5);
                               
                               const isInit = detectionType === 'initial';
+                              const isSeq = detectionType === 'sequence';
+                              
+                              // Respect showSequenceDots only in sequence mode for calibration window
+                              // Differential window always shows dots
+                              const isDiffWindow = singleWaveType === 'differential';
+                              if (!isDiffWindow && isSeq && singleWaveType === 'calibration' && settings.faultDetection.showSequenceDots === false) {
+                                return null;
+                              }
+
+                              if (!markersVisible) return null;
+
                               const startColor = settings.faultDetection.sequenceHeadStartColor;
                               const peakColor = settings.faultDetection.sequenceHeadPeakColor;
                               const dotSize = settings.faultDetection.sequenceHeadSize;

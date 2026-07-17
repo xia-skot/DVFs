@@ -54,6 +54,7 @@ export interface AppSettings {
     sequenceHeadPeakColor: string;
     sequenceHeadSize: number;
     showSequenceGradient: boolean;
+    showSequenceDots: boolean;
     gradientStartColor: string;
     gradientEndColor: string;
     gradientFineness: number;
@@ -165,6 +166,7 @@ export const defaultSettings: AppSettings = {
     sequenceHeadPeakColor: '#3b82f6',
     sequenceHeadSize: 4,
     showSequenceGradient: true,
+    showSequenceDots: true,
     gradientStartColor: '#005387',
     gradientEndColor: '#ffffff',
     gradientFineness: 10,

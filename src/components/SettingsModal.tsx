@@ -234,7 +234,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
               </div>
               
               <div className="pt-2 border-t border-gray-100">
-                <h4 className="text-sm font-medium text-gray-700 mb-3">界面布局与视图</h4>
+                <h4 className="text-sm font-bold text-red-600 italic mb-3">界面布局与视图</h4>
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-1.5">
                     <label className="text-xs font-medium text-gray-700">拓扑构建操作区默认宽度(%)</label>
@@ -351,7 +351,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
               </div>
 
               <div className="pt-2 border-t border-gray-100">
-                <h4 className="text-sm font-medium text-gray-700 mb-3">序列标定算法配置 (PSO)</h4>
+                <h4 className="text-sm font-bold text-red-600 italic mb-3">序列标定算法配置 (PSO)</h4>
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-1.5">
                     <label className="text-xs font-medium text-gray-700">PSO 粒子群规模</label>
@@ -389,7 +389,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
               </div>
 
               <div className="pt-2 border-t border-gray-100">
-                <h4 className="text-sm font-medium text-gray-700 mb-3">波头序列标定参数</h4>
+                <h4 className="text-sm font-bold text-red-600 italic mb-3">波头序列标定参数</h4>
                 <div className="grid grid-cols-2 gap-4 mb-4">
                   <div className="space-y-1.5">
                     <label className="text-xs font-medium text-gray-700">标定时间窗口长度</label>
@@ -468,7 +468,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
               </div>
 
               <div className="pt-2 border-t border-gray-100">
-                <h4 className="text-sm font-medium text-gray-700 mb-3">算法执行范围控制</h4>
+                <h4 className="text-sm font-bold text-red-600 italic mb-3">算法执行范围控制</h4>
                 <div className="space-y-2">
                   <label className="flex items-center gap-2 cursor-pointer group">
                     <input
@@ -494,7 +494,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
               </div>
 
               <div className="pt-2 border-t border-gray-100">
-                <h4 className="text-sm font-medium text-gray-700 mb-3">界面与显示</h4>
+                <h4 className="text-sm font-bold text-red-600 italic mb-3">界面与显示</h4>
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-1.5">
                     <label className="text-xs font-medium text-gray-700">左侧操作栏默认宽度 (px)</label>
@@ -545,97 +545,115 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
               </div>
 
               <div className="pt-2 border-t border-gray-100">
-                <h4 className="text-sm font-medium text-gray-700 mb-3">波头序列标定数据点样式</h4>
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-                  <div className="space-y-1.5 flex flex-col">
-                    <label className="text-xs font-medium text-gray-700">起始点颜色</label>
-                    <div className="flex gap-2 items-center mt-1">
-                      <input
-                        type="color"
-                        value={localSettings.faultDetection.sequenceHeadStartColor}
-                        onChange={(e) => setLocalSettings(prev => ({ ...prev, faultDetection: { ...prev.faultDetection, sequenceHeadStartColor: e.target.value } }))}
-                        className="w-8 h-8 rounded border border-gray-300 cursor-pointer"
-                      />
-                      <span className="text-xs text-gray-500 font-mono">{localSettings.faultDetection.sequenceHeadStartColor}</span>
+                <h4 className="text-sm font-bold text-red-600 italic mb-3">波头序列标定数据点样式</h4>
+                <div className="space-y-4">
+                  {/* 第一排：数据点显示设置 */}
+                  <div className="grid grid-cols-1 sm:grid-cols-4 gap-4 items-end">
+                    <div className="space-y-1.5 pb-1.5">
+                      <label className="flex items-center gap-2 cursor-pointer group">
+                        <input
+                          type="checkbox"
+                          checked={localSettings.faultDetection.showSequenceDots !== false}
+                          onChange={(e) => setLocalSettings(prev => ({ ...prev, faultDetection: { ...prev.faultDetection, showSequenceDots: e.target.checked } }))}
+                          className="w-4 h-4 text-blue-600 rounded border-gray-300 focus:ring-blue-500"
+                        />
+                        <span className="text-xs font-medium text-gray-700 group-hover:text-blue-600 transition-colors">显示波头数据点</span>
+                      </label>
                     </div>
-                  </div>
-                  <div className="space-y-1.5 flex flex-col">
-                    <label className="text-xs font-medium text-gray-700">波峰点颜色</label>
-                    <div className="flex gap-2 items-center mt-1">
-                      <input
-                        type="color"
-                        value={localSettings.faultDetection.sequenceHeadPeakColor}
-                        onChange={(e) => setLocalSettings(prev => ({ ...prev, faultDetection: { ...prev.faultDetection, sequenceHeadPeakColor: e.target.value } }))}
-                        className="w-8 h-8 rounded border border-gray-300 cursor-pointer"
-                      />
-                      <span className="text-xs text-gray-500 font-mono">{localSettings.faultDetection.sequenceHeadPeakColor}</span>
+                    <div className="space-y-1.5 flex flex-col">
+                      <label className="text-xs font-medium text-gray-700">起始点颜色</label>
+                      <div className="flex gap-2 items-center mt-1">
+                        <input
+                          type="color"
+                          value={localSettings.faultDetection.sequenceHeadStartColor}
+                          onChange={(e) => setLocalSettings(prev => ({ ...prev, faultDetection: { ...prev.faultDetection, sequenceHeadStartColor: e.target.value } }))}
+                          className="w-8 h-8 rounded border border-gray-300 cursor-pointer p-0"
+                        />
+                        <span className="text-xs text-gray-500 font-mono">{localSettings.faultDetection.sequenceHeadStartColor}</span>
+                      </div>
                     </div>
-                  </div>
-                  <div className="space-y-1.5">
-                    <label className="text-xs font-medium text-gray-700">数据点大小 (px)</label>
-                    <input
-                      type="number"
-                      value={localSettings.faultDetection.sequenceHeadSize}
-                      onChange={(e) => setLocalSettings(prev => ({ ...prev, faultDetection: { ...prev.faultDetection, sequenceHeadSize: Number(e.target.value) } }))}
-                      className="w-full h-8 px-2.5 text-sm border border-gray-300 rounded focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none transition-colors"
-                    />
-                  </div>
-                  <div className="space-y-1.5 flex flex-col justify-end pb-1.5">
-                    <label className="flex items-center gap-2 cursor-pointer">
+                    <div className="space-y-1.5 flex flex-col">
+                      <label className="text-xs font-medium text-gray-700">波峰点颜色</label>
+                      <div className="flex gap-2 items-center mt-1">
+                        <input
+                          type="color"
+                          value={localSettings.faultDetection.sequenceHeadPeakColor}
+                          onChange={(e) => setLocalSettings(prev => ({ ...prev, faultDetection: { ...prev.faultDetection, sequenceHeadPeakColor: e.target.value } }))}
+                          className="w-8 h-8 rounded border border-gray-300 cursor-pointer p-0"
+                        />
+                        <span className="text-xs text-gray-500 font-mono">{localSettings.faultDetection.sequenceHeadPeakColor}</span>
+                      </div>
+                    </div>
+                    <div className="space-y-1.5 flex flex-col">
+                      <label className="text-xs font-medium text-gray-700">数据点大小 (px)</label>
                       <input
-                        type="checkbox"
-                        checked={localSettings.faultDetection.showSequenceGradient !== false}
-                        onChange={(e) => setLocalSettings(prev => ({ ...prev, faultDetection: { ...prev.faultDetection, showSequenceGradient: e.target.checked } }))}
-                        className="w-4 h-4 text-blue-600 rounded border-gray-300 focus:ring-blue-500"
+                        type="number"
+                        min="1"
+                        max="20"
+                        value={localSettings.faultDetection.sequenceHeadSize}
+                        onChange={(e) => setLocalSettings(prev => ({ ...prev, faultDetection: { ...prev.faultDetection, sequenceHeadSize: Number(e.target.value) } }))}
+                        className="w-full h-8 px-2.5 text-xs border border-gray-300 rounded focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none transition-colors"
                       />
-                      <span className="text-xs font-medium text-gray-700">显示波头渐变区域</span>
-                    </label>
+                    </div>
                   </div>
 
-                  {localSettings.faultDetection.showSequenceGradient !== false && (
-                    <div className="grid grid-cols-3 gap-4 mt-3 pt-3 border-t border-dashed border-gray-100 col-span-2 sm:col-span-4 w-full">
-                      <div className="space-y-1.5 flex flex-col">
-                        <label className="text-xs font-medium text-gray-700">渐变始颜色</label>
-                        <div className="flex gap-2 items-center mt-1">
-                          <input
-                            type="color"
-                            value={localSettings.faultDetection.gradientStartColor || '#005387'}
-                            onChange={(e) => setLocalSettings(prev => ({ ...prev, faultDetection: { ...prev.faultDetection, gradientStartColor: e.target.value } }))}
-                            className="w-8 h-8 rounded border border-gray-300 cursor-pointer p-0"
-                          />
-                          <span className="text-xs text-gray-500 font-mono">{localSettings.faultDetection.gradientStartColor || '#005387'}</span>
-                        </div>
-                      </div>
-                      <div className="space-y-1.5 flex flex-col">
-                        <label className="text-xs font-medium text-gray-700">渐变末颜色</label>
-                        <div className="flex gap-2 items-center mt-1">
-                          <input
-                            type="color"
-                            value={localSettings.faultDetection.gradientEndColor || '#ffffff'}
-                            onChange={(e) => setLocalSettings(prev => ({ ...prev, faultDetection: { ...prev.faultDetection, gradientEndColor: e.target.value } }))}
-                            className="w-8 h-8 rounded border border-gray-300 cursor-pointer p-0"
-                          />
-                          <span className="text-xs text-gray-500 font-mono">{localSettings.faultDetection.gradientEndColor || '#ffffff'}</span>
-                        </div>
-                      </div>
-                      <div className="space-y-1.5">
-                        <label className="text-xs font-medium text-gray-700">色阶分辨度 (2-50)</label>
+                  {/* 第二排：渐变区域显示设置 */}
+                  <div className="grid grid-cols-1 sm:grid-cols-4 gap-4 items-end pt-2 border-t border-dashed border-gray-100">
+                    <div className="space-y-1.5 pb-1.5">
+                      <label className="flex items-center gap-2 cursor-pointer group">
                         <input
-                          type="number"
-                          min="2"
-                          max="50"
-                          value={localSettings.faultDetection.gradientFineness || 10}
-                          onChange={(e) => setLocalSettings(prev => ({ ...prev, faultDetection: { ...prev.faultDetection, gradientFineness: Math.max(2, Math.min(50, Number(e.target.value))) } }))}
-                          className="w-full h-8 px-2.5 text-sm border border-gray-300 rounded focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none transition-colors"
+                          type="checkbox"
+                          checked={localSettings.faultDetection.showSequenceGradient !== false}
+                          onChange={(e) => setLocalSettings(prev => ({ ...prev, faultDetection: { ...prev.faultDetection, showSequenceGradient: e.target.checked } }))}
+                          className="w-4 h-4 text-blue-600 rounded border-gray-300 focus:ring-blue-500"
                         />
+                        <span className="text-xs font-medium text-gray-700 group-hover:text-blue-600 transition-colors">显示波头渐变区域</span>
+                      </label>
+                    </div>
+                    
+                    <div className="space-y-1.5 flex flex-col">
+                      <label className="text-xs font-medium text-gray-700">渐变始颜色</label>
+                      <div className="flex gap-2 items-center mt-1">
+                        <input
+                          type="color"
+                          value={localSettings.faultDetection.gradientStartColor || '#005387'}
+                          onChange={(e) => setLocalSettings(prev => ({ ...prev, faultDetection: { ...prev.faultDetection, gradientStartColor: e.target.value } }))}
+                          className="w-8 h-8 rounded border border-gray-300 cursor-pointer p-0"
+                        />
+                        <span className="text-xs text-gray-500 font-mono">{localSettings.faultDetection.gradientStartColor || '#005387'}</span>
                       </div>
                     </div>
-                  )}
+                    
+                    <div className="space-y-1.5 flex flex-col">
+                      <label className="text-xs font-medium text-gray-700">渐变末颜色</label>
+                      <div className="flex gap-2 items-center mt-1">
+                        <input
+                          type="color"
+                          value={localSettings.faultDetection.gradientEndColor || '#ffffff'}
+                          onChange={(e) => setLocalSettings(prev => ({ ...prev, faultDetection: { ...prev.faultDetection, gradientEndColor: e.target.value } }))}
+                          className="w-8 h-8 rounded border border-gray-300 cursor-pointer p-0"
+                        />
+                        <span className="text-xs text-gray-500 font-mono">{localSettings.faultDetection.gradientEndColor || '#ffffff'}</span>
+                      </div>
+                    </div>
+
+                    <div className="space-y-1.5 flex flex-col">
+                      <label className="text-xs font-medium text-gray-700">色阶分辨率 (1-50)</label>
+                      <input
+                        type="number"
+                        min="1"
+                        max="50"
+                        value={localSettings.faultDetection.gradientFineness || 10}
+                        onChange={(e) => setLocalSettings(prev => ({ ...prev, faultDetection: { ...prev.faultDetection, gradientFineness: Math.max(1, Math.min(50, Number(e.target.value))) } }))}
+                        className="w-full h-8 px-2.5 text-xs border border-gray-300 rounded focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none transition-colors"
+                      />
+                    </div>
+                  </div>
                 </div>
               </div>
 
               <div className="pt-2 border-t border-gray-100">
-                <h4 className="text-sm font-medium text-gray-700 mb-3">波形曲线默认颜色</h4>
+                <h4 className="text-sm font-bold text-red-600 italic mb-3">波形曲线默认颜色</h4>
                 <div className="grid grid-cols-3 gap-3">
                   {Object.entries(localSettings.faultDetection.curveColors).map(([key, color]) => (
                     <div key={key} className="flex items-center space-x-2">
@@ -666,7 +684,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
               </div>
 
               <div className="pt-2 border-t border-gray-100">
-                <h4 className="text-sm font-medium text-gray-700 mb-3">数据导出设置</h4>
+                <h4 className="text-sm font-bold text-red-600 italic mb-3">数据导出设置</h4>
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-1.5">
                     <label className="text-xs font-medium text-gray-700">默认变量命名规则</label>
@@ -702,7 +720,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
             <div className="space-y-6">
               
               <div className="space-y-3">
-                <h4 className="text-sm font-semibold text-gray-800">基本设置</h4>
+                <h4 className="text-sm font-bold text-red-600 italic">基本设置</h4>
                 <div className="space-y-1.5">
                   <label className="text-xs font-medium text-gray-700">系统数据导入默认文件夹</label>
                   <div className="flex space-x-2">
@@ -719,7 +737,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
               </div>
 
               <div className="space-y-3 pt-4 border-t border-gray-100">
-                <h4 className="text-sm font-semibold text-gray-800">本地数据管理中心弹窗设置</h4>
+                <h4 className="text-sm font-bold text-red-600 italic">本地数据管理中心弹窗设置</h4>
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-1.5">
                     <label className="text-xs font-medium text-gray-700">弹窗默认宽度 (px)</label>
@@ -744,7 +762,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
 
               <div className="space-y-4 pt-4 border-t border-gray-100">
                 <div>
-                  <h4 className="text-sm font-semibold text-gray-800">引导语与提示样式设置</h4>
+                  <h4 className="text-sm font-bold text-red-600 italic">引导语与提示样式设置</h4>
                   <p className="text-xs text-gray-500 mt-0.5">单独设置常规提示和错误提示的字体样式，并能实时在下方进行预览。</p>
                 </div>
 
@@ -1068,7 +1086,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
 
               <div className="space-y-4 pt-4 border-t border-gray-100">
                 <div>
-                  <h4 className="text-sm font-semibold text-gray-800">全局快捷键配置</h4>
+                  <h4 className="text-sm font-bold text-red-600 italic">全局快捷键配置</h4>
                   <p className="text-[11px] text-gray-400 mt-0.5">点击下方任一快捷键框，然后按下键盘按键组合即可直接修改。支持单键或多组合键（支持 Ctrl/Alt/Shift 组合键）。</p>
                 </div>
 
@@ -1348,7 +1366,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
               </div>
 
               <div className="pt-4 border-t border-gray-100">
-                <h4 className="text-xs font-medium text-gray-700 mb-2">定位计算参数说明</h4>
+                <h4 className="text-sm font-bold text-red-600 italic mb-2">定位计算参数说明</h4>
                 <div className="p-4 bg-blue-50/70 border border-blue-100 rounded-lg text-xs text-blue-800 space-y-1.5">
                   <p>1. <strong>双端行波法：</strong>利用故障发生时产生的行波传至线路两端测点的时刻差，结合线路长度和波速精确计算故障点位置。公式为：x = (L + v * dt) / 2。</p>
                   <p>2. <strong>单端行波法：</strong>利用首次到达故障行波与故障点反射波之间的时间差，结合波速计算位置。公式为：x = v * dt / 2。</p>
